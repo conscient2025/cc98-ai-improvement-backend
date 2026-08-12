@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+
+def _client(tmp_path: Path) -> TestClient:
+    os.environ.setdefault("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+    os.environ["AUTH_DEV_PRINT_CODE"] = "true"
+    os.environ["WATCH_FORCE_MOCK_TOPICS"] = "true"
+    os.environ["MATCHER_FORCE_RULES"] = "true"
+    os.environ["ENABLE_SCHEDULER"] = "false"
+
+    import app.database as database
+    import app.main as main
+
+    database.Base.metadata.drop_all(bind=database.engine)
+    database.Base.metadata.create_all(bind=database.engine)
+    return TestClient(main.app)
+
+
+def test_health(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    code_response = client.post("/api/v1/auth/request-code", json={"email": "student@zju.edu.cn"})
+    assert code_response.status_code == 200
+    code = code_response.json()["dev_code"]
+    assert code
+
+    verify_response = client.post("/api/v1/auth/verify-code", json={"email": "student@zju.edu.cn", "code": code})
+    assert verify_response.status_code == 200
+    assert verify_response.json()["access_token"]
+
+    sub_response = client.post(
+        "/api/subscribe",
+        json={"user_id": "demo_user", "topic": "CC98 AI", "description": "search and watch notification"},
+    )
+    assert sub_response.status_code == 200
+    subscription = sub_response.json()
+    assert subscription["active"] is True
+    assert subscription["topic"] == "CC98 AI"
+
+    scan_response = client.post("/api/tasks/scan")
+    assert scan_response.status_code == 200
+    scan = scan_response.json()
+    assert scan["scanned_subscriptions"] == 1
+    assert scan["created_notifications"] >= 1
+
+    second_scan_response = client.post("/api/tasks/scan")
+    assert second_scan_response.status_code == 200
+    assert second_scan_response.json()["created_notifications"] == 0
+
+    notifications_response = client.get("/api/notifications")
+    assert notifications_response.status_code == 200
+    notifications = notifications_response.json()
+    assert notifications
+    assert notifications[0]["delivery_status"] in {"skipped", "sent", "failed"}
+
+
+def test_subscription_limit(tmp_path: Path) -> None:
+    os.environ["SUBSCRIPTION_LIMIT"] = "1"
+    client = _client(tmp_path)
+
+    first = client.post("/api/v1/subscriptions", json={"user_id": "u1", "name": "backend", "description": "FastAPI"})
+    assert first.status_code == 200
+
+    second = client.post("/api/v1/subscriptions", json={"user_id": "u1", "name": "AI", "description": "LLM"})
+    assert second.status_code == 400
