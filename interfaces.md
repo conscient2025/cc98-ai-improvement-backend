@@ -46,8 +46,8 @@ Create body:
 ```json
 {
   "user_id": "demo_user",
-  "name": "实习招聘",
-  "description": "算法、后端、暑期实习相关新帖",
+  "name": "backend internship",
+  "description": "posts about backend internship and hiring",
   "board_id": null
 }
 ```

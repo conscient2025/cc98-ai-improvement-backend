@@ -1,0 +1,273 @@
+# Test Handoff
+
+这份文档给测试同学用，目标是快速验证后端 MVP 是否可演示、接口是否稳定。
+
+## 测试范围
+
+本后端负责：
+
+- 产品账号邮箱验证码登录。
+- Watch 订阅创建、查看、暂停、恢复、删除。
+- CC98 帖子扫描，默认可用 mock 数据。
+- 订阅和帖子匹配。
+- 通知记录落库。
+- DingTalk 通知渠道配置和测试。
+- Worker 健康状态和扫描结果统计。
+
+本后端暂不负责：
+
+- 浏览器插件里的正式 AI 搜索。
+- 用户自己的 CC98 Token 管理。
+- 用户自己的 LLM API Key 管理。
+
+## 本地准备
+
+```powershell
+pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m uvicorn app.main:app --port 8000 --reload
+```
+
+建议 `.env`：
+
+```text
+WATCH_FORCE_MOCK_TOPICS=true
+MATCHER_FORCE_RULES=true
+ENABLE_SCHEDULER=false
+AUTH_DEV_PRINT_CODE=true
+```
+
+接口文档页面：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## 自动化测试
+
+```powershell
+python -m compileall app tests
+python -m pytest -q
+```
+
+当前预期：
+
+```text
+3 passed
+```
+
+如果出现 FastAPI `on_event` deprecation warning，可以忽略，不影响功能。
+
+## 手工测试用例
+
+### 1. 健康检查
+
+```http
+GET /api/v1/health
+```
+
+预期：
+
+- HTTP 200。
+- `status=ok`。
+- `components.database=ok`。
+
+### 2. 邮箱验证码登录
+
+请求验证码：
+
+```http
+POST /api/v1/auth/request-code
+Content-Type: application/json
+```
+
+```json
+{ "email": "student@zju.edu.cn" }
+```
+
+预期：
+
+- HTTP 200。
+- 开发环境返回 `dev_code`。
+
+验证：
+
+```http
+POST /api/v1/auth/verify-code
+Content-Type: application/json
+```
+
+```json
+{ "email": "student@zju.edu.cn", "code": "上一步返回的 dev_code" }
+```
+
+预期：
+
+- HTTP 200。
+- 返回 `access_token`。
+- 返回用户信息。
+
+反例：
+
+- 非浙大邮箱应返回 400。
+- 错误验证码应返回 400。
+
+### 3. 创建订阅
+
+```http
+POST /api/v1/subscriptions
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "demo_user",
+  "name": "CC98 AI",
+  "description": "search and watch notification",
+  "board_id": null
+}
+```
+
+预期：
+
+- HTTP 200。
+- `status=enabled`。
+- `active=true`。
+
+### 4. 订阅列表
+
+```http
+GET /api/v1/subscriptions?user_id=demo_user
+```
+
+预期：
+
+- 返回数组。
+- 包含刚才创建的订阅。
+
+### 5. 暂停和恢复订阅
+
+暂停：
+
+```http
+PATCH /api/v1/subscriptions/{id}
+Content-Type: application/json
+```
+
+```json
+{ "status": "paused" }
+```
+
+预期：`active=false`。
+
+恢复：
+
+```json
+{ "status": "enabled" }
+```
+
+预期：`active=true`。
+
+### 6. 订阅数量限制
+
+`.env` 默认：
+
+```text
+SUBSCRIPTION_LIMIT=10
+```
+
+同一个 `user_id` 创建超过 10 个启用订阅时，预期返回 400。
+
+### 7. 手动扫描
+
+```http
+POST /api/v1/tasks/scan
+```
+
+mock 模式预期：
+
+- HTTP 200。
+- `scanned_subscriptions >= 1`。
+- `fetched_topics >= 1`。
+- 首次扫描 `created_notifications >= 1`。
+- 第二次重复扫描 `created_notifications=0`，因为通知有唯一约束。
+
+### 8. 通知历史
+
+```http
+GET /api/v1/notifications?user_id=demo_user
+```
+
+预期：
+
+- 返回通知数组。
+- 每条通知有 `topic_title`、`topic_url`、`matched_reason`。
+- 未配置通知渠道时 `delivery_status=skipped`。
+
+### 9. DingTalk 通知渠道
+
+保存配置：
+
+```http
+PUT /api/v1/notification-channels
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "demo_user",
+  "provider": "dingtalk",
+  "enabled": true,
+  "config": {
+    "webhook": "真实 DingTalk webhook",
+    "secret": "真实 secret，可为空"
+  }
+}
+```
+
+测试：
+
+```http
+POST /api/v1/notification-channels/test
+```
+
+预期：
+
+- 配置正确：HTTP 200。
+- 配置错误：HTTP 400，并返回错误原因。
+- 获取配置时 secret 被隐藏为 `***`。
+
+### 10. 管理健康状态
+
+```http
+GET /api/v1/admin/health
+```
+
+预期包含：
+
+- `cc98_service_account`
+- `workers`
+- `cursor`
+
+如果没有真实 CC98 服务账号，`cc98_service_account` 可能不是 ok，这是符合预期的。
+
+## 旧接口回归
+
+为了兼容旧前端，也请抽测：
+
+- `POST /api/subscribe`
+- `GET /api/subscriptions`
+- `DELETE /api/subscribe/{id}`
+- `GET /api/notifications`
+- `GET /api/notification-settings`
+- `PUT /api/notification-settings`
+- `POST /api/tasks/scan`
+
+旧接口能用即可，新功能优先按 `/api/v1/*` 验证。
+
+## 风险点
+
+- 真实 CC98 抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token。
+- 真实通知依赖 DingTalk webhook 是否可用。
+- 现在匹配默认是规则匹配，`MATCHER_FORCE_RULES=false` 后才会尝试 LLM。
+- 邮箱验证码目前是 MVP 开发模式，生产需要接 SMTP。

@@ -50,6 +50,11 @@ python -m pytest -q
 
 New versioned APIs live under `/api/v1/*`.
 
+Handoff docs:
+
+- Frontend: `docs/frontend-handoff.md`
+- Testing: `docs/test-handoff.md`
+
 Legacy compatibility APIs are also kept:
 
 ```text
