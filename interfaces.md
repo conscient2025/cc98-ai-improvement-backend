@@ -1,23 +1,20 @@
-# CC98 AI Improvement Backend API
+# CC98 AI 优化项目后端接口说明
 
-Backend scope: product account, Watch subscriptions, notification channels,
-notification history, CC98 service-account polling, matching workers, and health.
+后端职责：产品账号、Watch 订阅、通知渠道、通知历史、CC98 服务账号扫描、匹配 worker 和健康状态。
 
-AI Search should run in the browser plugin with the user's own CC98 token and
-LLM API key. The backend keeps `/api/research` only as a compatibility stub.
+AI 搜索建议放在浏览器插件里完成，使用用户自己的 CC98 Token 和 LLM API Key。后端只保留 `/api/research` 作为旧前端兼容占位接口。
 
-## Health
+## 健康检查
 
 - `GET /api/health`
 - `GET /api/v1/health`
 - `GET /api/v1/admin/health`
 
-`/api/v1/admin/health` reports database-side worker status, CC98 service-account
-probe status, and the Watch cursor.
+`/api/v1/admin/health` 会返回 worker 状态、CC98 服务账号状态和 Watch 扫描游标。
 
-## Auth
+## 产品账号登录
 
-Product auth is separated from CC98 identity.
+产品账号和 CC98 账号是分开的。MVP 阶段使用浙大邮箱验证码登录。
 
 - `POST /api/v1/auth/request-code`
 
@@ -31,17 +28,16 @@ Product auth is separated from CC98 identity.
 { "email": "student@zju.edu.cn", "code": "123456" }
 ```
 
-MVP returns `dev_code` when `AUTH_DEV_PRINT_CODE=true`. Replace this with SMTP
-before public deployment.
+开发环境下如果 `AUTH_DEV_PRINT_CODE=true`，接口会返回 `dev_code`，方便本地测试。正式部署前要换成真正的邮件发送。
 
-## Subscriptions
+## 订阅管理
 
 - `POST /api/v1/subscriptions`
 - `GET /api/v1/subscriptions?user_id=demo_user`
 - `PATCH /api/v1/subscriptions/{id}`
 - `DELETE /api/v1/subscriptions/{id}`
 
-Create body:
+创建订阅：
 
 ```json
 {
@@ -52,26 +48,26 @@ Create body:
 }
 ```
 
-Rules:
+规则：
 
-- `status` is `enabled` or `paused`.
-- Default max enabled subscriptions is 10 per user.
-- Legacy `topic` is accepted and mapped to `name`.
+- `status` 只有 `enabled` 和 `paused`。
+- 默认每个用户最多启用 10 个订阅。
+- 为了兼容旧前端，旧字段 `topic` 也可以传，后端会映射成 `name`。
 
-Legacy compatibility:
+旧接口兼容：
 
 - `POST /api/subscribe`
 - `GET /api/subscriptions`
 - `GET /api/admin/subscriptions`
 - `DELETE /api/subscribe/{id}`
 
-## Notification Channels
+## 通知渠道
 
 - `GET /api/v1/notification-channels?user_id=demo_user`
 - `PUT /api/v1/notification-channels`
 - `POST /api/v1/notification-channels/test`
 
-Example DingTalk config:
+DingTalk 配置示例：
 
 ```json
 {
@@ -85,37 +81,35 @@ Example DingTalk config:
 }
 ```
 
-Legacy compatibility:
+旧接口兼容：
 
 - `GET /api/notification-settings`
 - `PUT /api/notification-settings`
 - `POST /api/notification-settings/test`
 
-## Notifications
+## 通知历史
 
 - `GET /api/v1/notifications?user_id=demo_user`
 - `GET /api/notifications?user_id=demo_user`
 
-Notification uniqueness is `(user_id, subscription_id, topic_id)`, so repeated
-scans do not create duplicate reminders for the same matched post.
+通知去重规则是 `(user_id, subscription_id, topic_id)`，所以重复扫描不会给同一个用户、同一个订阅、同一个帖子重复生成提醒。
 
-## Watch Scan
+## Watch 扫描
 
 - `POST /api/v1/tasks/scan`
 - `POST /api/tasks/scan`
 
-The scan worker:
+扫描流程：
 
-1. Loads enabled subscriptions.
-2. Uses CC98 service account to search candidate topics, or mock topics when no
-   service account is configured.
-3. Persists CC98 topic snapshots.
-4. Matches topic against subscription.
-5. Creates unique notifications.
-6. Sends through enabled notification channels.
-7. Updates worker health and cursor.
+1. 读取所有启用中的订阅。
+2. 使用 CC98 服务账号搜索候选帖子；如果没有服务账号或开启 mock，则使用 mock 帖子。
+3. 保存 CC98 帖子快照。
+4. 判断帖子是否匹配订阅。
+5. 生成唯一通知。
+6. 通过已启用的通知渠道发送。
+7. 更新 worker 健康状态和扫描游标。
 
-Important env vars:
+重要环境变量：
 
 - `CC98_SERVICE_USERNAME`
 - `CC98_SERVICE_PASSWORD`

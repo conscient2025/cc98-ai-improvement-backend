@@ -1,13 +1,12 @@
-# CC98 AI Improvement Backend
+# CC98 AI 优化项目后端
 
-This repository contains the backend for the CC98 AI product.
+这是 CC98 AI 优化项目的后端仓库。
 
-The backend owns product accounts, Watch subscriptions, notification channels,
-CC98 service-account access, polling, matching, notification history, and health
-state. AI Search should stay in the browser extension because it uses the user's
-own CC98 token and LLM API key.
+后端主要负责“订阅提醒”这一块：产品账号、订阅管理、通知渠道、CC98 服务账号访问、定时扫描、帖子匹配、通知历史和健康状态。
 
-## Quick Start
+正式的 AI 搜索建议放在浏览器插件里完成，因为它需要使用用户自己的 CC98 Token 和 LLM API Key，这些敏感信息不应该上传到后端。
+
+## 快速启动
 
 ```powershell
 pip install -r requirements.txt
@@ -15,13 +14,13 @@ Copy-Item .env.example .env
 python -m uvicorn app.main:app --port 8000 --reload
 ```
 
-Open:
+启动后打开：
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-For local demos, keep:
+本地演示建议 `.env` 保持：
 
 ```text
 MATCHER_FORCE_RULES=true
@@ -29,33 +28,43 @@ WATCH_FORCE_MOCK_TOPICS=true
 ENABLE_SCHEDULER=false
 ```
 
-Real Watch polling requires a CC98 service account:
+这样即使暂时没有 CC98 公共账号，也能用 mock 数据跑完整流程。
+
+## 真实 CC98 扫描
+
+真实订阅扫描需要配置一个后端公共 CC98 服务账号：
 
 ```text
 CC98_SERVICE_USERNAME=
 CC98_SERVICE_PASSWORD=
 ```
 
-The backend logs in through `https://openid.cc98.org/connect/token`, refreshes
-tokens when possible, and uses that service token only for Watch.
+后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅扫描，不用于 AI 搜索。
 
-Run checks:
+## 本地检查
 
 ```powershell
 python -m compileall app tests
 python -m pytest -q
 ```
 
-## API Shape
+如果 Windows 临时目录权限异常，可以这样跑测试：
 
-New versioned APIs live under `/api/v1/*`.
+```powershell
+python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
+```
 
-Handoff docs:
+## 接口说明
 
-- Frontend: `docs/frontend-handoff.md`
-- Testing: `docs/test-handoff.md`
+新版接口统一放在 `/api/v1/*` 下。
 
-Legacy compatibility APIs are also kept:
+交接文档：
+
+- 前端同学：`docs/frontend-handoff.md`
+- 测试同学：`docs/test-handoff.md`
+- 接口总览：`interfaces.md`
+
+为了兼容之前仓库里的前端，也保留了旧接口：
 
 ```text
 POST   /api/subscribe
@@ -68,9 +77,9 @@ POST   /api/notification-settings/test
 POST   /api/tasks/scan
 ```
 
-## Boundaries
+## 安全边界
 
-- Do not upload user CC98 tokens to this backend.
-- Do not upload user LLM API keys to this backend.
-- Do not commit `.env`, database files, tokens, passwords, or webhook secrets.
-- Treat CC98 titles/content as untrusted input before passing anything to a model.
+- 不要把用户自己的 CC98 Token 上传到后端。
+- 不要把用户自己的 LLM API Key 上传到后端。
+- 不要提交 `.env`、数据库文件、token、密码、webhook secret。
+- CC98 帖子标题和正文都属于不可信输入，传给模型前必须做边界控制和结构校验。
