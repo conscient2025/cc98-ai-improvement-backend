@@ -4,11 +4,11 @@
 
 ## 结论
 
-后端现在主要负责 Watch 订阅提醒，不负责正式 AI 搜索。
+后端现在只负责 Watch 订阅新帖提醒，不负责历史搜索，也不负责正式 AI 搜索。
 
 - AI 搜索：建议在浏览器插件里完成，使用用户自己的 CC98 Token 和 LLM API Key。
-- 订阅提醒：由后端完成，包括订阅管理、扫描 CC98、匹配、通知、通知历史。
-- `/api/research` 只是兼容旧前端的占位接口，不建议当正式搜索接口继续接。
+- 订阅新帖提醒：由后端完成，包括订阅管理、扫描 CC98 最新帖、匹配、通知、通知历史。
+- `/api/research` 已关闭，会返回 410，前端不要再接这个功能。
 
 ## 本地启动
 
@@ -112,7 +112,7 @@ Content-Type: application/json
 DELETE /api/v1/subscriptions/{id}
 ```
 
-### 手动触发扫描
+### 手动触发新帖扫描
 
 ```http
 POST /api/v1/tasks/scan
@@ -132,7 +132,7 @@ POST /api/v1/tasks/scan
 }
 ```
 
-前端 demo 可以在“立即检查”按钮里调这个接口。
+前端 demo 可以在“立即检查新帖”按钮里调这个接口。
 
 ### 获取通知列表
 
@@ -147,7 +147,7 @@ GET /api/v1/notifications?user_id=demo_user
   "id": 1,
   "subscription_id": 1,
   "topic_id": "mock-cc98-ai-1",
-  "topic_title": "求一个 CC98 AI 搜索和订阅提醒工具",
+  "topic_title": "新生军训",
   "topic_url": "https://www.cc98.org/topic/mock-cc98-ai-1",
   "matched_reason": "命中关键词：cc98、ai",
   "delivery_status": "skipped",
@@ -242,7 +242,7 @@ Content-Type: application/json
 
 - 不要把用户 CC98 Token 传给后端。
 - 不要把用户自己的 LLM API Key 传给后端。
-- 不要依赖 `/api/research` 做正式 AI 搜索。
+- 不要依赖 `/api/research`，后端历史搜索功能已经砍掉。
 
 ## 联调最短路径
 

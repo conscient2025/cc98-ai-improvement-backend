@@ -1,8 +1,8 @@
 # CC98 AI 优化项目后端接口说明
 
-后端职责：产品账号、Watch 订阅、通知渠道、通知历史、CC98 服务账号扫描、匹配 worker 和健康状态。
+后端职责：产品账号、Watch 订阅、通知渠道、通知历史、CC98 服务账号新帖扫描、匹配 worker 和健康状态。
 
-AI 搜索建议放在浏览器插件里完成，使用用户自己的 CC98 Token 和 LLM API Key。后端只保留 `/api/research` 作为旧前端兼容占位接口。
+后端现在只保留“订阅新帖提醒”。历史搜索/历史查阅功能已砍掉，`/api/research` 会返回 410。AI 搜索如果后续要做，建议放在浏览器插件里完成，使用用户自己的 CC98 Token 和 LLM API Key。
 
 ## 健康检查
 
@@ -121,7 +121,7 @@ SMTP_FROM=你的网易邮箱
 
 通知去重规则是 `(user_id, subscription_id, topic_id)`，所以重复扫描不会给同一个用户、同一个订阅、同一个帖子重复生成提醒。
 
-## Watch 扫描
+## Watch 新帖扫描
 
 - `POST /api/v1/tasks/scan`
 - `POST /api/tasks/scan`
@@ -129,7 +129,7 @@ SMTP_FROM=你的网易邮箱
 扫描流程：
 
 1. 读取所有启用中的订阅。
-2. 使用 CC98 服务账号搜索候选帖子；如果没有服务账号或开启 mock，则使用 mock 帖子。
+2. 使用 CC98 服务账号拉取订阅指定版块或 `WATCH_BOARD_IDS` 配置版块的最新帖子；如果没有服务账号或开启 mock，则使用 mock 帖子。
 3. 保存 CC98 帖子快照。
 4. 判断帖子是否匹配订阅。
 5. 生成唯一通知。
@@ -141,6 +141,7 @@ SMTP_FROM=你的网易邮箱
 - `CC98_SERVICE_USERNAME`
 - `CC98_SERVICE_PASSWORD`
 - `CC98_SERVICE_REFRESH_TOKEN`
+- `WATCH_BOARD_IDS`
 - `WATCH_FORCE_MOCK_TOPICS`
 - `MATCHER_FORCE_RULES`
 - `ENABLE_SCHEDULER`

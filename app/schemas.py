@@ -158,4 +158,3 @@ class AdminHealthOut(BaseModel):
     cc98_service_account: dict[str, Any]
     workers: dict[str, Any]
     cursor: dict[str, Any] | None = None
-

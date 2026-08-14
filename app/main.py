@@ -360,10 +360,4 @@ def admin_health(db: Session = Depends(get_db)) -> AdminHealthOut:
 
 @app.get("/api/research")
 def legacy_research(query: str = Query(...)) -> dict[str, Any]:
-    return {
-        "query": query,
-        "keywords": [query],
-        "summary": "根据当前架构，AI 搜索应在浏览器插件侧使用用户自己的 CC98 Token 和 LLM API Key 完成；后端只保留这个兼容接口，避免旧前端直接报错。",
-        "topics": [],
-        "source": "compatibility_stub",
-    }
+    raise HTTPException(status_code=410, detail="历史搜索功能已砍掉；后端现在只保留订阅新帖提醒。")

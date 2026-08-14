@@ -8,7 +8,7 @@
 
 - 产品账号邮箱验证码登录。
 - Watch 订阅创建、查看、暂停、恢复、删除。
-- CC98 帖子扫描，默认可用 mock 数据。
+- CC98 新帖扫描，默认可用 mock 数据。
 - 订阅和帖子匹配。
 - 通知记录落库。
 - DingTalk 通知渠道配置和测试。
@@ -18,6 +18,7 @@
 本后端暂不负责：
 
 - 浏览器插件里的正式 AI 搜索。
+- 历史搜索/历史查阅功能。
 - 用户自己的 CC98 Token 管理。
 - 用户自己的 LLM API Key 管理。
 
@@ -36,6 +37,15 @@ WATCH_FORCE_MOCK_TOPICS=true
 MATCHER_FORCE_RULES=true
 ENABLE_SCHEDULER=false
 AUTH_DEV_PRINT_CODE=true
+```
+
+如果测试真实 CC98 新帖扫描，需要配置公共 CC98 服务账号，并设置要扫描的版块：
+
+```text
+CC98_SERVICE_USERNAME=公共 CC98 账号
+CC98_SERVICE_PASSWORD=公共 CC98 密码
+WATCH_BOARD_IDS=版块ID1,版块ID2
+WATCH_FORCE_MOCK_TOPICS=false
 ```
 
 如果要测试真实网易邮箱订阅推送，把 `.env` 改成：
@@ -190,7 +200,7 @@ SUBSCRIPTION_LIMIT=10
 
 同一个 `user_id` 创建超过 10 个启用订阅时，预期返回 400。
 
-### 7. 手动扫描
+### 7. 手动扫描新帖
 
 ```http
 POST /api/v1/tasks/scan
@@ -313,7 +323,7 @@ GET /api/v1/admin/health
 
 ## 风险点
 
-- 真实 CC98 抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token。
+- 真实 CC98 新帖抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token，还需要订阅带 `board_id` 或配置全局 `WATCH_BOARD_IDS`。
 - 真实通知依赖 DingTalk webhook 是否可用。
 - 现在匹配默认是规则匹配，`MATCHER_FORCE_RULES=false` 后才会尝试 LLM。
 - 产品登录验证码目前仍是 MVP 开发模式；网易邮箱只用于订阅帖子推送。
