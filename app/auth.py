@@ -10,7 +10,12 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .models import EmailVerificationCode, User
+from .notifiers import send_email_code
 from .utils import as_utc, expires_in_minutes, hash_secret, make_code, new_id, utc_now
+
+
+def _dev_print_code_enabled() -> bool:
+    return os.getenv("AUTH_DEV_PRINT_CODE", "true").lower() in {"1", "true", "yes", "on"}
 
 
 def _allowed_domains() -> set[str]:
@@ -40,9 +45,12 @@ def request_email_code(db: Session, email: str) -> tuple[str, str | None]:
     db.add(record)
     db.commit()
 
-    # MVP mail transport: print/dev-return the code. Replace with real SMTP later.
+    result = send_email_code(email, code, expire_minutes)
+    if not result.ok and not _dev_print_code_enabled():
+        raise HTTPException(status_code=500, detail=f"Email code send failed: {result.error}")
+
     print(f"[CC98 AI] verification code for {email}: {code}")
-    dev_code = code if os.getenv("AUTH_DEV_PRINT_CODE", "true").lower() == "true" else None
+    dev_code = code if _dev_print_code_enabled() else None
     return email, dev_code
 
 
@@ -106,4 +114,3 @@ def token_payload(token: str) -> dict[str, Any]:
     if float(payload.get("exp", 0)) < utc_now().timestamp():
         raise HTTPException(status_code=401, detail="Token expired")
     return payload
-

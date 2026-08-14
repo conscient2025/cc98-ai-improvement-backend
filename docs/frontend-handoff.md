@@ -162,6 +162,7 @@ GET /api/v1/notifications?user_id=demo_user
 - `matched_reason` 展示为什么提醒。
 - `delivery_status=skipped` 表示没有配置通知渠道，不是错误。
 - 同一个 `user_id + subscription_id + topic_id` 不会重复生成通知。
+- 同一次扫描里命中的多个帖子会聚合成一条 DingTalk/邮件消息发送，不会每个帖子刷一条。
 
 ## 通知渠道
 
@@ -200,6 +201,27 @@ POST /api/v1/notification-channels/test
 
 - 后端返回配置时会把 `secret` 脱敏成 `***`。
 - 如果用户没有改 secret，前端可以原样传回 `***`，后端会保留旧 secret。
+
+保存邮箱通知：
+
+```http
+PUT /api/v1/notification-channels
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "demo_user",
+  "provider": "email",
+  "enabled": true,
+  "config": {
+    "to": "student@zju.edu.cn",
+    "subject_prefix": "CC98 订阅提醒"
+  }
+}
+```
+
+邮箱通知默认使用后端 `.env` 里的 SMTP 配置。
 
 ## 旧接口兼容
 

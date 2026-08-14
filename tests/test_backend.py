@@ -5,6 +5,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.notifiers import build_batch_notification_text
+
 
 def _client(tmp_path: Path) -> TestClient:
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
@@ -75,3 +77,15 @@ def test_subscription_limit(tmp_path: Path) -> None:
 
     second = client.post("/api/v1/subscriptions", json={"user_id": "u1", "name": "AI", "description": "LLM"})
     assert second.status_code == 400
+
+
+def test_batch_notification_text() -> None:
+    text = build_batch_notification_text(
+        [
+            {"title": "topic 1", "url": "https://www.cc98.org/topic/1", "reason": "hit keyword"},
+            {"title": "topic 2", "url": "https://www.cc98.org/topic/2", "reason": "semantic match"},
+        ]
+    )
+    assert "2 个匹配帖子" in text
+    assert "topic 1" in text
+    assert "topic 2" in text

@@ -30,6 +30,18 @@ AI 搜索建议放在浏览器插件里完成，使用用户自己的 CC98 Token
 
 开发环境下如果 `AUTH_DEV_PRINT_CODE=true`，接口会返回 `dev_code`，方便本地测试。正式部署前要换成真正的邮件发送。
 
+网易邮箱 SMTP 配置示例：
+
+```text
+SMTP_HOST=smtp.163.com
+SMTP_PORT=465
+SMTP_USE_SSL=true
+SMTP_USERNAME=你的网易邮箱
+SMTP_PASSWORD=网易邮箱授权码
+SMTP_FROM=你的网易邮箱
+AUTH_DEV_PRINT_CODE=false
+```
+
 ## 订阅管理
 
 - `POST /api/v1/subscriptions`
@@ -81,6 +93,22 @@ DingTalk 配置示例：
 }
 ```
 
+邮箱通知配置示例：
+
+```json
+{
+  "user_id": "demo_user",
+  "provider": "email",
+  "enabled": true,
+  "config": {
+    "to": "student@zju.edu.cn",
+    "subject_prefix": "CC98 订阅提醒"
+  }
+}
+```
+
+默认复用全局 SMTP 配置。如果想给某个通知渠道单独指定 SMTP，也可以在 `config` 里补 `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`from`。
+
 旧接口兼容：
 
 - `GET /api/notification-settings`
@@ -106,7 +134,7 @@ DingTalk 配置示例：
 3. 保存 CC98 帖子快照。
 4. 判断帖子是否匹配订阅。
 5. 生成唯一通知。
-6. 通过已启用的通知渠道发送。
+6. 按用户把本次新增通知聚合成一条消息，再通过已启用的通知渠道发送。
 7. 更新 worker 健康状态和扫描游标。
 
 重要环境变量：

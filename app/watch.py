@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .cc98_client import cc98_client
 from .matcher import match_subscription_topic
 from .models import CC98Topic, Notification, NotificationChannel, Subscription, SystemCursor, WorkerStatus, utc_now
-from .notifiers import send_notification
+from .notifiers import NotificationItem, send_batch_notification
 from .schemas import ScanResponse
 from .utils import json_dumps, json_loads
 
@@ -108,32 +108,47 @@ def _enabled_channels(db: Session, user_id: str) -> list[NotificationChannel]:
     )
 
 
-def _send_for_notification(db: Session, notification: Notification) -> bool:
-    sent = False
-    for channel in _enabled_channels(db, notification.user_id):
+def _send_notification_batch(db: Session, user_id: str, notifications: list[Notification]) -> int:
+    if not notifications:
+        return 0
+
+    channels = _enabled_channels(db, user_id)
+    if not channels:
+        for notification in notifications:
+            notification.delivery_status = "skipped"
+        db.commit()
+        return 0
+
+    items: list[NotificationItem] = [
+        {
+            "title": notification.topic_title,
+            "url": notification.topic_url,
+            "reason": notification.matched_reason,
+        }
+        for notification in notifications
+    ]
+
+    for channel in channels:
         config = json_loads(channel.config_json, {})
-        result = send_notification(
-            provider=channel.provider,
-            config=config,
-            title=notification.topic_title,
-            url=notification.topic_url,
-            reason=notification.matched_reason,
-        )
+        result = send_batch_notification(channel.provider, config, items)
         channel.last_test_at = utc_now()
         channel.last_test_status = result.status
         channel.last_error = result.error
         if result.ok:
+            now = utc_now()
+            for notification in notifications:
+                notification.delivery_channel = channel.provider
+                notification.delivery_status = "sent"
+                notification.sent_at = now
+            db.commit()
+            return len(notifications)
+
+        for notification in notifications:
             notification.delivery_channel = channel.provider
-            notification.delivery_status = "sent"
-            notification.sent_at = utc_now()
-            sent = True
-            break
-        notification.delivery_channel = channel.provider
-        notification.delivery_status = "failed"
-    if not sent and notification.delivery_status == "pending":
-        notification.delivery_status = "skipped"
+            notification.delivery_status = "failed"
+
     db.commit()
-    return sent
+    return 0
 
 
 def _set_worker_status(db: Session, name: str, status: str, error: str | None = None, metrics: dict[str, Any] | None = None) -> None:
@@ -185,6 +200,7 @@ def run_watch_scan(db: Session) -> ScanResponse:
         subscriptions = db.query(Subscription).filter(Subscription.status == "enabled").all()
         metrics["scanned_subscriptions"] = len(subscriptions)
         latest_topic_id: str | None = None
+        pending_by_user: dict[str, list[Notification]] = {}
 
         for subscription in subscriptions:
             topics, fetch_source = fetch_candidates_for_subscription(subscription)
@@ -219,8 +235,10 @@ def run_watch_scan(db: Session) -> ScanResponse:
                     db.rollback()
                     continue
                 metrics["created_notifications"] += 1
-                if _send_for_notification(db, notification):
-                    metrics["sent_notifications"] += 1
+                pending_by_user.setdefault(notification.user_id, []).append(notification)
+
+        for user_id, notifications in pending_by_user.items():
+            metrics["sent_notifications"] += _send_notification_batch(db, user_id, notifications)
 
         if latest_topic_id:
             _update_cursor(db, "cc98_watch:last_topic_id", latest_topic_id)

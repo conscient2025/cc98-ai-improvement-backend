@@ -12,6 +12,7 @@
 - 订阅和帖子匹配。
 - 通知记录落库。
 - DingTalk 通知渠道配置和测试。
+- 邮箱通知渠道配置和测试。
 - Worker 健康状态和扫描结果统计。
 
 本后端暂不负责：
@@ -35,6 +36,18 @@ WATCH_FORCE_MOCK_TOPICS=true
 MATCHER_FORCE_RULES=true
 ENABLE_SCHEDULER=false
 AUTH_DEV_PRINT_CODE=true
+```
+
+如果要测试真实网易邮箱验证码，把 `.env` 改成：
+
+```text
+SMTP_HOST=smtp.163.com
+SMTP_PORT=465
+SMTP_USE_SSL=true
+SMTP_USERNAME=你的网易邮箱
+SMTP_PASSWORD=网易邮箱授权码
+SMTP_FROM=你的网易邮箱
+AUTH_DEV_PRINT_CODE=false
 ```
 
 接口文档页面：
@@ -191,6 +204,7 @@ mock 模式预期：
 - `fetched_topics >= 1`。
 - 首次扫描 `created_notifications >= 1`。
 - 第二次重复扫描 `created_notifications=0`，因为通知有唯一约束。
+- 如果本次有多个新通知，DingTalk/邮箱应收到一条聚合消息，而不是多条刷屏消息。
 
 ### 8. 通知历史
 
@@ -237,7 +251,40 @@ POST /api/v1/notification-channels/test
 - 配置错误：HTTP 400，并返回错误原因。
 - 获取配置时 secret 被隐藏为 `***`。
 
-### 10. 管理健康状态
+### 10. 邮箱通知渠道
+
+保存配置：
+
+```http
+PUT /api/v1/notification-channels
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "demo_user",
+  "provider": "email",
+  "enabled": true,
+  "config": {
+    "to": "student@zju.edu.cn",
+    "subject_prefix": "CC98 订阅提醒"
+  }
+}
+```
+
+测试：
+
+```http
+POST /api/v1/notification-channels/test
+```
+
+预期：
+
+- SMTP 配置正确：HTTP 200，收件邮箱收到测试邮件。
+- SMTP 配置错误：HTTP 400，并返回错误原因。
+- 扫描有多个新帖子时，只收到一封聚合邮件。
+
+### 11. 管理健康状态
 
 ```http
 GET /api/v1/admin/health
