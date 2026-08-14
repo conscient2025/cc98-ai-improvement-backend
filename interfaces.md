@@ -28,19 +28,7 @@ AI 搜索建议放在浏览器插件里完成，使用用户自己的 CC98 Token
 { "email": "student@zju.edu.cn", "code": "123456" }
 ```
 
-开发环境下如果 `AUTH_DEV_PRINT_CODE=true`，接口会返回 `dev_code`，方便本地测试。正式部署前要换成真正的邮件发送。
-
-网易邮箱 SMTP 配置示例：
-
-```text
-SMTP_HOST=smtp.163.com
-SMTP_PORT=465
-SMTP_USE_SSL=true
-SMTP_USERNAME=你的网易邮箱
-SMTP_PASSWORD=网易邮箱授权码
-SMTP_FROM=你的网易邮箱
-AUTH_DEV_PRINT_CODE=false
-```
+开发环境下如果 `AUTH_DEV_PRINT_CODE=true`，接口会返回 `dev_code`，方便本地测试。当前网易邮箱只用于订阅帖子推送，不用于登录验证码。
 
 ## 订阅管理
 
@@ -107,7 +95,18 @@ DingTalk 配置示例：
 }
 ```
 
-默认复用全局 SMTP 配置。如果想给某个通知渠道单独指定 SMTP，也可以在 `config` 里补 `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`from`。
+默认复用全局 SMTP 配置。网易邮箱配置示例：
+
+```text
+SMTP_HOST=smtp.163.com
+SMTP_PORT=465
+SMTP_USE_SSL=true
+SMTP_USERNAME=你的网易邮箱
+SMTP_PASSWORD=网易邮箱授权码
+SMTP_FROM=你的网易邮箱
+```
+
+如果想给某个通知渠道单独指定 SMTP，也可以在 `config` 里补 `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`from`。
 
 旧接口兼容：
 

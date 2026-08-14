@@ -38,7 +38,7 @@ ENABLE_SCHEDULER=false
 AUTH_DEV_PRINT_CODE=true
 ```
 
-如果要测试真实网易邮箱验证码，把 `.env` 改成：
+如果要测试真实网易邮箱订阅推送，把 `.env` 改成：
 
 ```text
 SMTP_HOST=smtp.163.com
@@ -47,7 +47,6 @@ SMTP_USE_SSL=true
 SMTP_USERNAME=你的网易邮箱
 SMTP_PASSWORD=网易邮箱授权码
 SMTP_FROM=你的网易邮箱
-AUTH_DEV_PRINT_CODE=false
 ```
 
 接口文档页面：
@@ -317,4 +316,4 @@ GET /api/v1/admin/health
 - 真实 CC98 抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token。
 - 真实通知依赖 DingTalk webhook 是否可用。
 - 现在匹配默认是规则匹配，`MATCHER_FORCE_RULES=false` 后才会尝试 LLM。
-- 邮箱验证码目前是 MVP 开发模式，生产需要接 SMTP。
+- 产品登录验证码目前仍是 MVP 开发模式；网易邮箱只用于订阅帖子推送。

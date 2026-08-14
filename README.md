@@ -41,9 +41,9 @@ CC98_SERVICE_PASSWORD=
 
 后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅扫描，不用于 AI 搜索。
 
-## 网易邮箱发验证码
+## 网易邮箱发订阅推送
 
-如果要用网易邮箱发送登录验证码，需要先在网易邮箱里开启 SMTP，并获取“授权码”。后端使用授权码登录 SMTP，不要使用邮箱登录密码。
+如果用户选择用邮箱接收订阅帖子推送，可以用网易邮箱作为后端发件邮箱。需要先在网易邮箱里开启 SMTP，并获取“授权码”。后端使用授权码登录 SMTP，不要使用邮箱登录密码。
 
 `.env` 示例：
 
@@ -54,7 +54,6 @@ SMTP_USE_SSL=true
 SMTP_USERNAME=你的网易邮箱
 SMTP_PASSWORD=网易邮箱授权码
 SMTP_FROM=你的网易邮箱
-AUTH_DEV_PRINT_CODE=false
 ```
 
 如果使用 126 邮箱，通常把 `SMTP_HOST` 改成：

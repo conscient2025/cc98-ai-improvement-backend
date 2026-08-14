@@ -127,17 +127,6 @@ def _send_email(to_addr: str, subject: str, body: str, config: dict[str, Any] | 
     return SendResult(ok=True, status="sent")
 
 
-def send_email_code(to_addr: str, code: str, expire_minutes: int) -> SendResult:
-    subject = "CC98 AI 登录验证码"
-    body = (
-        "你好，\n\n"
-        f"你的 CC98 AI 登录验证码是：{code}\n"
-        f"验证码 {expire_minutes} 分钟内有效。\n\n"
-        "如果不是你本人操作，可以忽略这封邮件。"
-    )
-    return _send_email(to_addr=to_addr, subject=subject, body=body)
-
-
 def send_email_notification(config: dict[str, Any], text: str, count: int = 1) -> SendResult:
     to_addr = str(config.get("to") or config.get("email") or config.get("recipient") or "").strip()
     subject_prefix = str(config.get("subject_prefix") or "CC98 订阅提醒")
