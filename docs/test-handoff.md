@@ -39,12 +39,11 @@ ENABLE_SCHEDULER=false
 AUTH_DEV_PRINT_CODE=true
 ```
 
-如果测试真实 CC98 新帖扫描，需要配置公共 CC98 服务账号，并设置要扫描的版块：
+如果测试真实 CC98 新帖扫描，需要配置公共 CC98 服务账号。扫描对象是 CC98 的“查看新帖”列表，即全站多个版块汇总出来的新帖，不需要配置版块 ID。
 
 ```text
 CC98_SERVICE_USERNAME=公共 CC98 账号
 CC98_SERVICE_PASSWORD=公共 CC98 密码
-WATCH_BOARD_IDS=版块ID1,版块ID2
 WATCH_FORCE_MOCK_TOPICS=false
 ```
 
@@ -323,7 +322,7 @@ GET /api/v1/admin/health
 
 ## 风险点
 
-- 真实 CC98 新帖抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token，还需要订阅带 `board_id` 或配置全局 `WATCH_BOARD_IDS`。
+- 真实 CC98 新帖抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token；扫描的是 CC98 全站新帖列表，不要求订阅带 `board_id`。
 - 真实通知依赖 DingTalk webhook 是否可用。
 - 现在匹配默认是规则匹配，`MATCHER_FORCE_RULES=false` 后才会尝试 LLM。
 - 产品登录验证码目前仍是 MVP 开发模式；网易邮箱只用于订阅帖子推送。

@@ -88,36 +88,15 @@ def upsert_topics(db: Session, topics: Iterable[dict[str, Any]]) -> int:
     return count
 
 
-def _configured_board_ids() -> list[str]:
-    raw = os.getenv("WATCH_BOARD_IDS", "")
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _boards_for_subscription(subscription: Subscription) -> list[str]:
-    if subscription.board_id:
-        return [str(subscription.board_id)]
-    return _configured_board_ids()
-
-
 def fetch_new_topics_for_subscription(subscription: Subscription, limit: int = 20) -> tuple[list[dict[str, Any]], str]:
     if os.getenv("WATCH_FORCE_MOCK_TOPICS", "").lower() in {"1", "true", "yes", "on"}:
         return _mock_topics(), "mock"
     if not os.getenv("CC98_SERVICE_USERNAME") and not os.getenv("CC98_SERVICE_REFRESH_TOKEN"):
         return _mock_topics(), "mock"
 
-    board_ids = _boards_for_subscription(subscription)
-    if not board_ids:
-        return [], "missing_board_config"
-
-    topics_by_id: dict[str, dict[str, Any]] = {}
     try:
-        per_board_limit = max(1, limit)
-        for board_id in board_ids:
-            for topic in cc98_client.get_board_posts(board_id, page=1, limit=per_board_limit):
-                topic_id = str(topic.get("topic_id") or "")
-                if topic_id:
-                    topics_by_id[topic_id] = topic
-        return list(topics_by_id.values()), "cc98_new_posts"
+        _ = subscription
+        return cc98_client.get_new_posts(limit=max(1, limit)), "cc98_new_posts"
     except Exception:
         return _mock_topics(), "mock"
 

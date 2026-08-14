@@ -79,6 +79,28 @@ def test_subscription_limit(tmp_path: Path) -> None:
     assert second.status_code == 400
 
 
+def test_real_scan_without_board_uses_global_latest(monkeypatch) -> None:
+    from app import watch
+    from app.models import Subscription
+
+    monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
+    monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
+    monkeypatch.delenv("CC98_SERVICE_REFRESH_TOKEN", raising=False)
+
+    def fake_get_new_posts(*, limit: int = 20, offset: int = 0) -> list[dict[str, str]]:
+        assert limit == 20
+        assert offset == 0
+        return [{"topic_id": "latest-1", "title": "latest", "url": "https://www.cc98.org/topic/latest-1"}]
+
+    monkeypatch.setattr(watch.cc98_client, "get_new_posts", fake_get_new_posts)
+
+    subscription = Subscription(user_id="demo_user", name="latest", description="latest")
+    topics, source = watch.fetch_new_topics_for_subscription(subscription)
+
+    assert source == "cc98_new_posts"
+    assert topics[0]["topic_id"] == "latest-1"
+
+
 def test_batch_notification_text() -> None:
     text = build_batch_notification_text(
         [

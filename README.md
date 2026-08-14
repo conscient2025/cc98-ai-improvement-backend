@@ -32,15 +32,14 @@ ENABLE_SCHEDULER=false
 
 ## 真实 CC98 新帖扫描
 
-真实订阅扫描需要配置一个后端公共 CC98 服务账号，以及要扫描的新帖版块：
+真实订阅扫描需要配置一个后端公共 CC98 服务账号。扫描对象是 CC98 顶部入口里的“新帖”列表，也就是全站多个版块汇总出来的最新帖子，不是某一个固定版块。
 
 ```text
 CC98_SERVICE_USERNAME=
 CC98_SERVICE_PASSWORD=
-WATCH_BOARD_IDS=版块ID1,版块ID2
 ```
 
-后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取指定版块的最新帖子，再和订阅关键词/说明做匹配。
+后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取 CC98 全站新帖列表，再和订阅关键词/说明做匹配。
 
 ## 网易邮箱发订阅推送
 

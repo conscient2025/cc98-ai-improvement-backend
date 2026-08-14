@@ -83,6 +83,12 @@ class CC98ServiceClient:
             return []
         return [normalize_topic(item) for item in payload if isinstance(item, dict)]
 
+    def get_new_posts(self, *, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        payload = self._get_json("/topic/new", params={"from": offset, "size": limit})
+        if not isinstance(payload, list):
+            return []
+        return [normalize_topic(item) for item in payload if isinstance(item, dict)]
+
     def _get_json(self, path: str, *, params: dict[str, Any] | None = None, retry_auth: bool = True) -> Any:
         headers = service_auth.auth_header()
         response = httpx.get(self._url(path), params=params, headers=headers, timeout=self.timeout)
@@ -141,4 +147,3 @@ def normalize_topic(item: dict[str, Any]) -> dict[str, Any]:
 
 
 cc98_client = CC98ServiceClient()
-

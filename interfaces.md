@@ -129,7 +129,7 @@ SMTP_FROM=你的网易邮箱
 扫描流程：
 
 1. 读取所有启用中的订阅。
-2. 使用 CC98 服务账号拉取订阅指定版块或 `WATCH_BOARD_IDS` 配置版块的最新帖子；如果没有服务账号或开启 mock，则使用 mock 帖子。
+2. 使用 CC98 服务账号拉取“查看新帖”里的全站最新帖子；如果没有服务账号或开启 mock，则使用 mock 帖子。
 3. 保存 CC98 帖子快照。
 4. 判断帖子是否匹配订阅。
 5. 生成唯一通知。
@@ -141,7 +141,6 @@ SMTP_FROM=你的网易邮箱
 - `CC98_SERVICE_USERNAME`
 - `CC98_SERVICE_PASSWORD`
 - `CC98_SERVICE_REFRESH_TOKEN`
-- `WATCH_BOARD_IDS`
 - `WATCH_FORCE_MOCK_TOPICS`
 - `MATCHER_FORCE_RULES`
 - `ENABLE_SCHEDULER`
