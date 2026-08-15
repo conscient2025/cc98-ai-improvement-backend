@@ -6,6 +6,8 @@
 
 后端不再做历史搜索/历史查阅功能。正式的 AI 搜索如果后续要做，应该放在浏览器插件里完成，因为它需要使用用户自己的 CC98 Token 和 LLM API Key，这些敏感信息不应该上传到后端。
 
+扫描频率和通知频率是分开的：后端按 `SCAN_INTERVAL_MINUTES` 固定扫描新帖，用户可以在通知渠道里选择更慢的聚合推送频率。通知频率不会快于扫描频率，例如扫描每 10 分钟一次时，用户最快也是 10 分钟收到一次，也可以选择 60 分钟收到一次。
+
 ## 快速启动
 
 ```powershell
@@ -26,6 +28,7 @@ http://127.0.0.1:8000/docs
 MATCHER_FORCE_RULES=true
 WATCH_FORCE_MOCK_TOPICS=true
 ENABLE_SCHEDULER=false
+SCAN_INTERVAL_MINUTES=10
 ```
 
 这样即使暂时没有 CC98 公共账号，也能用 mock 数据跑完整流程。

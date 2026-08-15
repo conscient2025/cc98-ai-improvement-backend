@@ -57,6 +57,7 @@ class NotificationChannel(Base):
     config_json = Column(Text, nullable=False)
     enabled = Column(Boolean, default=False, nullable=False)
     last_test_at = Column(DateTime(timezone=True), nullable=True)
+    last_sent_at = Column(DateTime(timezone=True), nullable=True)
     last_test_status = Column(String(64), nullable=True)
     last_error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)

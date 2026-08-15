@@ -78,6 +78,7 @@ class NotificationChannelSave(BaseModel):
     provider: NotificationProvider = "dingtalk"
     enabled: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
+    notify_interval_minutes: int | None = Field(default=None, ge=1)
 
 
 class NotificationSettingSave(BaseModel):
@@ -85,6 +86,7 @@ class NotificationSettingSave(BaseModel):
     dingtalk_enabled: bool = False
     dingtalk_webhook: str | None = None
     dingtalk_secret: str | None = None
+    notify_interval_minutes: int | None = Field(default=None, ge=1)
 
 
 class NotificationChannelOut(BaseModel):
@@ -94,7 +96,9 @@ class NotificationChannelOut(BaseModel):
     enabled: bool
     config: dict[str, Any]
     has_secret: bool = False
+    notify_interval_minutes: int
     last_test_at: datetime | None = None
+    last_sent_at: datetime | None = None
     last_test_status: str | None = None
     last_error: str | None = None
     created_at: datetime | None = None
@@ -106,6 +110,7 @@ class NotificationSettingOut(BaseModel):
     dingtalk_enabled: bool
     dingtalk_webhook: str | None = None
     has_dingtalk_secret: bool = False
+    notify_interval_minutes: int
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

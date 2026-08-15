@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .cc98_client import cc98_client
 from .matcher import match_subscription_topic
 from .models import CC98Topic, Notification, NotificationChannel, Subscription, SystemCursor, WorkerStatus, utc_now
+from .notification_frequency import effective_notify_interval_minutes, parse_datetime
 from .notifiers import NotificationItem, send_batch_notification
 from .schemas import ScanResponse
 from .utils import json_dumps, json_loads
@@ -109,6 +110,23 @@ def _enabled_channels(db: Session, user_id: str) -> list[NotificationChannel]:
     )
 
 
+def _pending_notifications(db: Session, user_id: str) -> list[Notification]:
+    return (
+        db.query(Notification)
+        .filter(Notification.user_id == user_id, Notification.delivery_status.in_(["pending", "failed"]))
+        .order_by(Notification.id.asc())
+        .all()
+    )
+
+
+def _is_channel_due(channel: NotificationChannel, config: dict[str, Any], now: datetime) -> bool:
+    last_sent_at = parse_datetime(channel.last_sent_at)
+    if last_sent_at is None:
+        return True
+    interval = timedelta(minutes=effective_notify_interval_minutes(config))
+    return now - last_sent_at >= interval
+
+
 def _send_notification_batch(db: Session, user_id: str, notifications: list[Notification]) -> int:
     if not notifications:
         return 0
@@ -120,6 +138,7 @@ def _send_notification_batch(db: Session, user_id: str, notifications: list[Noti
         db.commit()
         return 0
 
+    now = utc_now()
     items: list[NotificationItem] = [
         {
             "title": notification.topic_title,
@@ -131,12 +150,13 @@ def _send_notification_batch(db: Session, user_id: str, notifications: list[Noti
 
     for channel in channels:
         config = json_loads(channel.config_json, {})
+        if not _is_channel_due(channel, config, now):
+            continue
         result = send_batch_notification(channel.provider, config, items)
-        channel.last_test_at = utc_now()
         channel.last_test_status = result.status
         channel.last_error = result.error
         if result.ok:
-            now = utc_now()
+            channel.last_sent_at = now
             for notification in notifications:
                 notification.delivery_channel = channel.provider
                 notification.delivery_status = "sent"
@@ -201,7 +221,7 @@ def run_watch_scan(db: Session) -> ScanResponse:
         subscriptions = db.query(Subscription).filter(Subscription.status == "enabled").all()
         metrics["scanned_subscriptions"] = len(subscriptions)
         latest_topic_id: str | None = None
-        pending_by_user: dict[str, list[Notification]] = {}
+        users_to_notify = {subscription.user_id for subscription in subscriptions}
 
         for subscription in subscriptions:
             topics, fetch_source = fetch_new_topics_for_subscription(subscription)
@@ -236,10 +256,9 @@ def run_watch_scan(db: Session) -> ScanResponse:
                     db.rollback()
                     continue
                 metrics["created_notifications"] += 1
-                pending_by_user.setdefault(notification.user_id, []).append(notification)
 
-        for user_id, notifications in pending_by_user.items():
-            metrics["sent_notifications"] += _send_notification_batch(db, user_id, notifications)
+        for user_id in users_to_notify:
+            metrics["sent_notifications"] += _send_notification_batch(db, user_id, _pending_notifications(db, user_id))
 
         if latest_topic_id:
             _update_cursor(db, "cc98_watch:last_topic_id", latest_topic_id)

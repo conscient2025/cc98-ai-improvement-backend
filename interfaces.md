@@ -74,6 +74,7 @@ DingTalk 配置示例：
   "user_id": "demo_user",
   "provider": "dingtalk",
   "enabled": true,
+  "notify_interval_minutes": 60,
   "config": {
     "webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
     "secret": "SECxxx"
@@ -88,6 +89,7 @@ DingTalk 配置示例：
   "user_id": "demo_user",
   "provider": "email",
   "enabled": true,
+  "notify_interval_minutes": 60,
   "config": {
     "to": "student@zju.edu.cn",
     "subject_prefix": "CC98 订阅提醒"
@@ -107,6 +109,13 @@ SMTP_FROM=你的网易邮箱
 ```
 
 如果想给某个通知渠道单独指定 SMTP，也可以在 `config` 里补 `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`from`。
+
+通知频率说明：
+
+- 扫描频率由后端 `.env` 的 `SCAN_INTERVAL_MINUTES` 固定控制。
+- 通知频率由通知渠道的 `notify_interval_minutes` 控制。
+- 后端会自动保证 `notify_interval_minutes >= SCAN_INTERVAL_MINUTES`。例如扫描每 10 分钟一次，用户传 1 分钟，实际返回和保存都是 10 分钟；用户传 60 分钟，则每小时聚合推送一次。
+- 未到通知时间的匹配帖子会先以 `delivery_status=pending` 保存在通知历史里，到时间后聚合发送。
 
 旧接口兼容：
 
@@ -133,8 +142,9 @@ SMTP_FROM=你的网易邮箱
 3. 保存 CC98 帖子快照。
 4. 判断帖子是否匹配订阅。
 5. 生成唯一通知。
-6. 按用户把本次新增通知聚合成一条消息，再通过已启用的通知渠道发送。
-7. 更新 worker 健康状态和扫描游标。
+6. 按用户和通知渠道判断是否到达用户选择的通知时间；未到时间则保持 `pending`。
+7. 到通知时间后，把待发送通知聚合成一条消息，再通过已启用的通知渠道发送。
+8. 更新 worker 健康状态和扫描游标。
 
 重要环境变量：
 

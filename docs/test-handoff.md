@@ -37,6 +37,7 @@ WATCH_FORCE_MOCK_TOPICS=true
 MATCHER_FORCE_RULES=true
 ENABLE_SCHEDULER=false
 AUTH_DEV_PRINT_CODE=true
+SCAN_INTERVAL_MINUTES=10
 ```
 
 如果测试真实 CC98 新帖扫描，需要配置公共 CC98 服务账号。扫描对象是 CC98 的“查看新帖”列表，即全站多个版块汇总出来的新帖，不需要配置版块 ID。
@@ -240,6 +241,7 @@ Content-Type: application/json
   "user_id": "demo_user",
   "provider": "dingtalk",
   "enabled": true,
+  "notify_interval_minutes": 60,
   "config": {
     "webhook": "真实 DingTalk webhook",
     "secret": "真实 secret，可为空"
@@ -258,6 +260,7 @@ POST /api/v1/notification-channels/test
 - 配置正确：HTTP 200。
 - 配置错误：HTTP 400，并返回错误原因。
 - 获取配置时 secret 被隐藏为 `***`。
+- 返回的 `notify_interval_minutes` 是实际生效值，不会小于 `SCAN_INTERVAL_MINUTES`。
 
 ### 10. 邮箱通知渠道
 
@@ -273,6 +276,7 @@ Content-Type: application/json
   "user_id": "demo_user",
   "provider": "email",
   "enabled": true,
+  "notify_interval_minutes": 60,
   "config": {
     "to": "student@zju.edu.cn",
     "subject_prefix": "CC98 订阅提醒"
@@ -292,7 +296,35 @@ POST /api/v1/notification-channels/test
 - SMTP 配置错误：HTTP 400，并返回错误原因。
 - 扫描有多个新帖子时，只收到一封聚合邮件。
 
-### 11. 管理健康状态
+### 11. 通知频率
+
+如果 `.env` 里：
+
+```text
+SCAN_INTERVAL_MINUTES=10
+```
+
+保存通知渠道时传：
+
+```json
+{
+  "user_id": "demo_user",
+  "provider": "dingtalk",
+  "enabled": true,
+  "notify_interval_minutes": 1,
+  "config": {
+    "webhook": "真实 DingTalk webhook",
+    "secret": ""
+  }
+}
+```
+
+预期：
+
+- 接口返回 `notify_interval_minutes=10`，因为通知不能比扫描更频繁。
+- 如果用户设置 `notify_interval_minutes=60`，后端会先生成通知记录，但不到 60 分钟不会推送；到时间后把期间积累的匹配帖子聚合成一条消息。
+
+### 12. 管理健康状态
 
 ```http
 GET /api/v1/admin/health
@@ -303,6 +335,7 @@ GET /api/v1/admin/health
 - `cc98_service_account`
 - `workers`
 - `cursor`
+- `GET /api/v1/health` 的 `components.scan_interval_minutes` 可用于确认扫描间隔。
 
 如果没有真实 CC98 服务账号，`cc98_service_account` 可能不是 ok，这是符合预期的。
 

@@ -184,6 +184,7 @@ Content-Type: application/json
   "user_id": "demo_user",
   "provider": "dingtalk",
   "enabled": true,
+  "notify_interval_minutes": 60,
   "config": {
     "webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
     "secret": "SECxxx"
@@ -201,6 +202,7 @@ POST /api/v1/notification-channels/test
 
 - 后端返回配置时会把 `secret` 脱敏成 `***`。
 - 如果用户没有改 secret，前端可以原样传回 `***`，后端会保留旧 secret。
+- `notify_interval_minutes` 是用户选择的聚合推送间隔。后端会保证它不小于扫描间隔；例如扫描间隔是 10 分钟，用户传 1 分钟，返回会变成 10 分钟。
 
 保存邮箱通知：
 
@@ -214,6 +216,7 @@ Content-Type: application/json
   "user_id": "demo_user",
   "provider": "email",
   "enabled": true,
+  "notify_interval_minutes": 60,
   "config": {
     "to": "student@zju.edu.cn",
     "subject_prefix": "CC98 订阅提醒"
@@ -222,6 +225,17 @@ Content-Type: application/json
 ```
 
 邮箱通知默认使用后端 `.env` 里的 SMTP 配置。
+
+通知渠道返回里会包含：
+
+```json
+{
+  "notify_interval_minutes": 60,
+  "last_sent_at": "2026-08-15T12:00:00"
+}
+```
+
+前端可以用 `GET /api/v1/health` 里的 `components.scan_interval_minutes` 作为通知频率选择器的最小值。
 
 ## 旧接口兼容
 

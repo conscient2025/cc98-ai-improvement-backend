@@ -79,6 +79,81 @@ def test_subscription_limit(tmp_path: Path) -> None:
     assert second.status_code == 400
 
 
+def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:
+    os.environ["SCAN_INTERVAL_MINUTES"] = "10"
+    client = _client(tmp_path)
+
+    response = client.put(
+        "/api/v1/notification-channels",
+        json={
+            "user_id": "demo_user",
+            "provider": "dingtalk",
+            "enabled": True,
+            "notify_interval_minutes": 1,
+            "config": {"webhook": "https://example.com/webhook", "secret": ""},
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["notify_interval_minutes"] == 10
+    assert data["config"]["notify_interval_minutes"] == 10
+
+
+def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch) -> None:
+    os.environ["SCAN_INTERVAL_MINUTES"] = "10"
+    client = _client(tmp_path)
+    channel_response = client.put(
+        "/api/v1/notification-channels",
+        json={
+            "user_id": "demo_user",
+            "provider": "dingtalk",
+            "enabled": True,
+            "notify_interval_minutes": 60,
+            "config": {"webhook": "https://example.com/webhook", "secret": ""},
+        },
+    )
+    assert channel_response.status_code == 200
+
+    from app import watch
+    from app.database import SessionLocal
+    from app.models import Notification, NotificationChannel, utc_now
+
+    calls: list[object] = []
+
+    def fake_send_batch_notification(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("notification should be deferred until interval is due")
+
+    monkeypatch.setattr(watch, "send_batch_notification", fake_send_batch_notification)
+
+    db = SessionLocal()
+    try:
+        channel = db.query(NotificationChannel).filter(NotificationChannel.user_id == "demo_user").one()
+        channel.last_sent_at = utc_now()
+        notification = Notification(
+            user_id="demo_user",
+            subscription_id=1,
+            topic_id="interval-topic-1",
+            topic_title="interval topic",
+            topic_url="https://www.cc98.org/topic/interval-topic-1",
+            matched_reason="hit keyword",
+            delivery_status="pending",
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+
+        sent = watch._send_notification_batch(db, "demo_user", [notification])
+
+        db.refresh(notification)
+        assert sent == 0
+        assert calls == []
+        assert notification.delivery_status == "pending"
+    finally:
+        db.close()
+
+
 def test_real_scan_without_board_uses_global_latest(monkeypatch) -> None:
     from app import watch
     from app.models import Subscription

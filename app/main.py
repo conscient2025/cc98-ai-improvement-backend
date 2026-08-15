@@ -12,6 +12,7 @@ from .auth import request_email_code, verify_email_code
 from .cc98_client import cc98_client
 from .database import get_db, init_db
 from .env import load_dotenv
+from .notification_frequency import effective_notify_interval_minutes, scan_interval_minutes, with_effective_notify_interval
 from .notifiers import redact_config, send_notification
 from .schemas import (
     AdminHealthOut,
@@ -78,7 +79,8 @@ def _subscription_out(subscription: models.Subscription) -> SubscriptionOut:
 
 
 def _channel_out(channel: models.NotificationChannel) -> NotificationChannelOut:
-    config, has_secret = redact_config(channel.provider, json_loads(channel.config_json, {}))
+    raw_config = with_effective_notify_interval(json_loads(channel.config_json, {}))
+    config, has_secret = redact_config(channel.provider, raw_config)
     return NotificationChannelOut(
         id=channel.id,
         user_id=channel.user_id,
@@ -86,7 +88,9 @@ def _channel_out(channel: models.NotificationChannel) -> NotificationChannelOut:
         enabled=channel.enabled,
         config=config,
         has_secret=has_secret,
+        notify_interval_minutes=effective_notify_interval_minutes(raw_config),
         last_test_at=channel.last_test_at,
+        last_sent_at=channel.last_sent_at,
         last_test_status=channel.last_test_status,
         last_error=channel.last_error,
         created_at=channel.created_at,
@@ -120,19 +124,23 @@ def _get_or_create_channel(db: Session, payload: NotificationChannelSave) -> mod
         .first()
     )
     if channel is None:
+        config = with_effective_notify_interval(payload.config, payload.notify_interval_minutes)
         channel = models.NotificationChannel(
             user_id=payload.user_id,
             provider=payload.provider,
-            config_json=json_dumps(payload.config),
+            config_json=json_dumps(config),
             enabled=payload.enabled,
         )
         db.add(channel)
     else:
         old_config = json_loads(channel.config_json, {})
         new_config = dict(payload.config)
-        for secret_key in ("secret", "token", "password"):
+        for secret_key in ("secret", "token", "password", "smtp_password"):
             if new_config.get(secret_key) == "***" and old_config.get(secret_key):
                 new_config[secret_key] = old_config[secret_key]
+        if payload.notify_interval_minutes is None and "notify_interval_minutes" not in new_config:
+            new_config["notify_interval_minutes"] = old_config.get("notify_interval_minutes")
+        new_config = with_effective_notify_interval(new_config, payload.notify_interval_minutes)
         channel.config_json = json_dumps(new_config)
         channel.enabled = payload.enabled
         channel.updated_at = utc_now()
@@ -149,6 +157,7 @@ def health() -> HealthResponse:
         components={
             "database": "ok",
             "scheduler_enabled": os.getenv("ENABLE_SCHEDULER", "false").lower() in {"1", "true", "yes", "on"},
+            "scan_interval_minutes": scan_interval_minutes(),
             "cc98_mode": "service_account" if os.getenv("CC98_SERVICE_USERNAME") else "mock_fallback",
         },
     )
@@ -273,13 +282,14 @@ def get_legacy_notification_settings(user_id: str = Query("demo_user"), db: Sess
         .first()
     )
     if channel is None:
-        return NotificationSettingOut(user_id=user_id, dingtalk_enabled=False)
+        return NotificationSettingOut(user_id=user_id, dingtalk_enabled=False, notify_interval_minutes=effective_notify_interval_minutes({}))
     config = json_loads(channel.config_json, {})
     return NotificationSettingOut(
         user_id=user_id,
         dingtalk_enabled=channel.enabled,
         dingtalk_webhook=config.get("webhook"),
         has_dingtalk_secret=bool(config.get("secret")),
+        notify_interval_minutes=effective_notify_interval_minutes(config),
         created_at=channel.created_at,
         updated_at=channel.updated_at,
     )
@@ -292,6 +302,7 @@ def save_legacy_notification_settings(payload: NotificationSettingSave, db: Sess
         provider="dingtalk",
         enabled=payload.dingtalk_enabled,
         config={"webhook": payload.dingtalk_webhook or "", "secret": payload.dingtalk_secret or ""},
+        notify_interval_minutes=payload.notify_interval_minutes,
     )
     _get_or_create_channel(db, channel_payload)
     return get_legacy_notification_settings(payload.user_id, db)
