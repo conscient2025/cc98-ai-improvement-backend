@@ -159,7 +159,7 @@ Content-Type: application/json
 关键词规则：
 
 - 空格分隔表示 AND：`计算机学院 保研` 需要两个词都命中。
-- 逗号、顿号、分号、换行分隔表示 OR：`计算机学院 保研，软院 推免` 两组任意一组完整命中即可。
+- 斜杠 `/` 表示同义词 OR：`微积分/微甲/vjf 历年卷 资料` 表示必须命中 `历年卷` 和 `资料`，同时还要命中 `微积分`、`微甲`、`vjf` 之一。
 
 ### 4. 订阅列表
 
@@ -231,7 +231,7 @@ GET /api/v1/notifications?user_id=demo_user
 - 返回通知数组。
 - 每条通知有 `topic_title`、`topic_url`、`matched_reason`。
 - 未配置通知渠道时 `delivery_status=skipped`。
-- `matched_reason` 应显示命中的关键词组合，例如 `命中关键词组合：计算机学院 + 保研`。
+- `matched_reason` 应显示命中的搜索表达式，例如 `命中搜索表达式：微甲 + 历年卷 + 资料`。
 
 ### 9. DingTalk 通知渠道
 

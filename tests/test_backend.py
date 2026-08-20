@@ -189,31 +189,40 @@ def test_batch_notification_text() -> None:
     assert "topic 2" in text
 
 
-def test_keyword_groups_use_and_inside_or_between_groups() -> None:
-    subscription = {"name": "计算机学院 保研，软院 推免", "description": ""}
+def test_keyword_expression_uses_space_and_slash_synonym_or() -> None:
+    subscription = {"name": "微积分/微甲/vjf 历年卷 资料", "description": ""}
 
-    first_group = rule_match(
+    synonym_hit = rule_match(
         subscription,
-        {"title": "计算机学院保研经验分享", "content": ""},
+        {"title": "求微甲历年卷资料整理", "content": ""},
     )
-    assert first_group.matched is True
-    assert "计算机学院 + 保研" in first_group.reason
+    assert synonym_hit.matched is True
+    assert "微甲 + 历年卷 + 资料" in synonym_hit.reason
 
-    second_group = rule_match(
+    latin_synonym_hit = rule_match(
         subscription,
-        {"title": "软院推免通知整理", "content": ""},
+        {"title": "vjf 历年卷资料分享", "content": ""},
     )
-    assert second_group.matched is True
-    assert "软院 + 推免" in second_group.reason
+    assert latin_synonym_hit.matched is True
+    assert "vjf + 历年卷 + 资料" in latin_synonym_hit.reason
 
-    partial = rule_match(
+    missing_required_group = rule_match(
         subscription,
-        {"title": "计算机学院活动通知", "content": ""},
+        {"title": "微积分资料汇总", "content": ""},
     )
-    assert partial.matched is False
+    assert missing_required_group.matched is False
 
-    unrelated_mix = rule_match(
+    missing_synonym_group = rule_match(
         subscription,
-        {"title": "软院保研交流帖", "content": ""},
+        {"title": "高数历年卷资料分享", "content": ""},
     )
-    assert unrelated_mix.matched is False
+    assert missing_synonym_group.matched is False
+
+
+def test_keyword_expression_can_model_a_and_b_or_c() -> None:
+    subscription = {"name": "计算机学院/计院 保研/推免", "description": ""}
+
+    result = rule_match(subscription, {"title": "计院推免通知整理", "content": ""})
+
+    assert result.matched is True
+    assert "计院 + 推免" in result.reason
