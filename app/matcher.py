@@ -16,6 +16,15 @@ class MatchResult:
     source: str = "rules"
 
 
+def _keyword_groups(value: str) -> list[list[str]]:
+    groups: list[list[str]] = []
+    for part in re.split(r"[,，、;；\n]+", value or ""):
+        tokens = _tokens(part)
+        if tokens:
+            groups.append(tokens)
+    return groups
+
+
 def _tokens(text: str) -> list[str]:
     words = re.findall(r"[\w\u4e00-\u9fff]+", (text or "").lower())
     return [word for word in words if len(word) >= 2]
@@ -26,20 +35,21 @@ def rule_match(subscription: dict[str, Any], topic: dict[str, Any]) -> MatchResu
     description = str(subscription.get("description") or "")
     title = str(topic.get("title") or "")
     text = f"{title} {topic.get('content') or ''}".lower()
-    keywords = []
-    keywords.extend(_tokens(name))
-    keywords.extend(token for token in _tokens(description) if token not in keywords)
+    groups = _keyword_groups(name)
+    groups.extend(_keyword_groups(description))
 
-    if not keywords:
+    if not groups:
         return MatchResult(False, "订阅没有可用于匹配的关键词", 0.0)
 
-    hits = [token for token in keywords if token.lower() in text]
-    if not hits:
-        return MatchResult(False, "标题/内容未命中订阅关键词", 0.0)
+    for group in groups:
+        missing = [token for token in group if token.lower() not in text]
+        if missing:
+            continue
+        confidence = min(1.0, 0.5 + 0.15 * len(group))
+        reason = "命中关键词组合：" + " + ".join(group[:5])
+        return MatchResult(True, reason, confidence)
 
-    confidence = min(1.0, 0.45 + 0.15 * len(hits))
-    reason = "命中关键词：" + "、".join(hits[:5])
-    return MatchResult(True, reason, confidence)
+    return MatchResult(False, "标题/内容未命中任一完整关键词组合", 0.0)
 
 
 def llm_match(subscription: dict[str, Any], topic: dict[str, Any]) -> MatchResult:

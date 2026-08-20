@@ -156,6 +156,11 @@ Content-Type: application/json
 - `status=enabled`。
 - `active=true`。
 
+关键词规则：
+
+- 空格分隔表示 AND：`计算机学院 保研` 需要两个词都命中。
+- 逗号、顿号、分号、换行分隔表示 OR：`计算机学院 保研，软院 推免` 两组任意一组完整命中即可。
+
 ### 4. 订阅列表
 
 ```http
@@ -226,6 +231,7 @@ GET /api/v1/notifications?user_id=demo_user
 - 返回通知数组。
 - 每条通知有 `topic_title`、`topic_url`、`matched_reason`。
 - 未配置通知渠道时 `delivery_status=skipped`。
+- `matched_reason` 应显示命中的关键词组合，例如 `命中关键词组合：计算机学院 + 保研`。
 
 ### 9. DingTalk 通知渠道
 

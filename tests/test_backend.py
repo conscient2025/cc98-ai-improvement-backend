@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.matcher import rule_match
 from app.notifiers import build_batch_notification_text
 
 
@@ -186,3 +187,33 @@ def test_batch_notification_text() -> None:
     assert "2 个匹配帖子" in text
     assert "topic 1" in text
     assert "topic 2" in text
+
+
+def test_keyword_groups_use_and_inside_or_between_groups() -> None:
+    subscription = {"name": "计算机学院 保研，软院 推免", "description": ""}
+
+    first_group = rule_match(
+        subscription,
+        {"title": "计算机学院保研经验分享", "content": ""},
+    )
+    assert first_group.matched is True
+    assert "计算机学院 + 保研" in first_group.reason
+
+    second_group = rule_match(
+        subscription,
+        {"title": "软院推免通知整理", "content": ""},
+    )
+    assert second_group.matched is True
+    assert "软院 + 推免" in second_group.reason
+
+    partial = rule_match(
+        subscription,
+        {"title": "计算机学院活动通知", "content": ""},
+    )
+    assert partial.matched is False
+
+    unrelated_mix = rule_match(
+        subscription,
+        {"title": "软院保研交流帖", "content": ""},
+    )
+    assert unrelated_mix.matched is False
