@@ -58,6 +58,10 @@ def _candidate_expressions(subscription: dict[str, Any]) -> list[str]:
     return expressions
 
 
+def has_valid_search_expression(subscription: dict[str, Any]) -> bool:
+    return any(_search_expression_groups(expression) for expression in _candidate_expressions(subscription))
+
+
 def rule_match(subscription: dict[str, Any], topic: dict[str, Any]) -> MatchResult:
     title = str(topic.get("title") or "")
     text = f"{title} {topic.get('content') or ''}".lower()

@@ -14,6 +14,7 @@ from .auth import request_email_code, token_payload, verify_email_code
 from .cc98_client import cc98_client
 from .database import get_db, init_db
 from .env import load_dotenv
+from .matcher import has_valid_search_expression
 from .notification_frequency import effective_notify_interval_minutes, scan_interval_minutes, with_effective_notify_interval
 from .notifiers import redact_config, send_notification
 from .schemas import (
@@ -169,6 +170,11 @@ def _ensure_subscription_owner(subscription: models.Subscription, current_user: 
         raise HTTPException(status_code=403, detail="不能操作其他用户的订阅")
 
 
+def _ensure_valid_subscription_expression(name: str, description: str) -> None:
+    if not has_valid_search_expression({"name": name, "description": description}):
+        raise HTTPException(status_code=400, detail="订阅关键词至少需要包含一个 2 个字以上的有效词，例如：电脑、电影、微积分/微甲/vjf")
+
+
 def _legacy_notification_settings_out(db: Session, user_id: str) -> NotificationSettingOut:
     channel = (
         db.query(models.NotificationChannel)
@@ -268,6 +274,7 @@ def create_subscription(
     description = normalize_topic_text(payload.description or payload.topic or payload.name or "")
     if not name:
         raise HTTPException(status_code=400, detail="订阅名称不能为空")
+    _ensure_valid_subscription_expression(name, description)
     active_count = (
         db.query(models.Subscription)
         .filter(models.Subscription.user_id == current_user.id, models.Subscription.status == "enabled")
@@ -313,10 +320,15 @@ def update_subscription(
     if subscription is None:
         raise HTTPException(status_code=404, detail="订阅不存在")
     _ensure_subscription_owner(subscription, current_user)
+    next_name = subscription.name
+    next_description = subscription.description
     if payload.name is not None:
-        subscription.name = normalize_topic_text(payload.name)
+        next_name = normalize_topic_text(payload.name)
     if payload.description is not None:
-        subscription.description = normalize_topic_text(payload.description)
+        next_description = normalize_topic_text(payload.description)
+    _ensure_valid_subscription_expression(next_name, next_description)
+    subscription.name = next_name
+    subscription.description = next_description
     if payload.board_id is not None:
         subscription.board_id = payload.board_id
     if payload.status is not None:

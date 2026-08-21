@@ -99,6 +99,29 @@ def test_user_endpoints_require_bearer_token(tmp_path: Path) -> None:
     assert response.status_code == 401
 
 
+def test_subscription_rejects_too_short_keywords(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+
+    response = client.post("/api/v1/subscriptions", headers=headers, json={"name": "了", "description": "的"})
+
+    assert response.status_code == 400
+    assert "2 个字以上" in response.json()["detail"]
+
+
+def test_subscription_update_rejects_too_short_keywords(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+
+    created = client.post("/api/v1/subscriptions", headers=headers, json={"name": "电脑", "description": ""})
+    assert created.status_code == 200
+
+    response = client.patch(f"/api/v1/subscriptions/{created.json()['id']}", headers=headers, json={"name": "的", "description": "了"})
+
+    assert response.status_code == 400
+    assert "2 个字以上" in response.json()["detail"]
+
+
 def test_scan_requires_admin_token(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
