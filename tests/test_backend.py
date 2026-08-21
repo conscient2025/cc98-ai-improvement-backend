@@ -10,13 +10,16 @@ from app.notifiers import build_batch_notification_text
 
 
 def _client(tmp_path: Path) -> TestClient:
-    os.environ.setdefault("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
+    os.environ["APP_ENV"] = "development"
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'test.db'}"
     os.environ["AUTH_DEV_PRINT_CODE"] = "true"
     os.environ["AUTH_EMAIL_DELIVERY"] = "false"
     os.environ["ADMIN_API_TOKEN"] = "test-admin-token"
     os.environ["WATCH_FORCE_MOCK_TOPICS"] = "true"
     os.environ["MATCHER_FORCE_RULES"] = "true"
     os.environ["ENABLE_SCHEDULER"] = "false"
+    os.environ["SUBSCRIPTION_LIMIT"] = "10"
+    os.environ["SCAN_INTERVAL_MINUTES"] = "10"
 
     import app.database as database
     import app.main as main
@@ -80,8 +83,8 @@ def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
 
 
 def test_subscription_limit(tmp_path: Path) -> None:
-    os.environ["SUBSCRIPTION_LIMIT"] = "1"
     client = _client(tmp_path)
+    os.environ["SUBSCRIPTION_LIMIT"] = "1"
     headers, _user_id = _login(client)
 
     first = client.post("/api/v1/subscriptions", headers=headers, json={"user_id": "u1", "name": "backend", "description": "FastAPI"})
@@ -128,6 +131,45 @@ def test_scan_requires_admin_token(tmp_path: Path) -> None:
     response = client.post("/api/v1/tasks/scan")
 
     assert response.status_code == 401
+
+
+def test_scan_fetches_global_latest_posts_once_for_multiple_subscriptions(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+    monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
+    monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
+    monkeypatch.delenv("CC98_SERVICE_REFRESH_TOKEN", raising=False)
+
+    first = client.post("/api/v1/subscriptions", headers=headers, json={"name": "新生", "description": ""})
+    second = client.post("/api/v1/subscriptions", headers=headers, json={"name": "校园", "description": ""})
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    from app import watch
+
+    calls = 0
+
+    def fake_get_new_posts(*, limit: int = 20, offset: int = 0) -> list[dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        assert limit == 20
+        assert offset == 0
+        return [
+            {"topic_id": "latest-1", "title": "新生校园通知", "url": "https://www.cc98.org/topic/latest-1"},
+            {"topic_id": "latest-2", "title": "校园活动", "url": "https://www.cc98.org/topic/latest-2"},
+        ]
+
+    monkeypatch.setattr(watch.cc98_client, "get_new_posts", fake_get_new_posts)
+
+    scan_response = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+
+    assert scan_response.status_code == 200
+    data = scan_response.json()
+    assert calls == 1
+    assert data["scanned_subscriptions"] == 2
+    assert data["fetched_topics"] == 2
+    assert data["candidate_pairs"] == 4
+    assert data["created_notifications"] >= 2
 
 
 def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:

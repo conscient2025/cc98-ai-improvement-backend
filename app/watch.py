@@ -93,7 +93,7 @@ def upsert_topics(db: Session, topics: Iterable[dict[str, Any]]) -> int:
     return count
 
 
-def fetch_new_topics_for_subscription(subscription: Subscription, limit: int = 20) -> tuple[list[dict[str, Any]], str]:
+def fetch_new_topics(limit: int = 20) -> tuple[list[dict[str, Any]], str]:
     if os.getenv("WATCH_FORCE_MOCK_TOPICS", "").lower() in {"1", "true", "yes", "on"}:
         if _is_production():
             raise RuntimeError("WATCH_FORCE_MOCK_TOPICS must be disabled in production")
@@ -104,12 +104,16 @@ def fetch_new_topics_for_subscription(subscription: Subscription, limit: int = 2
         return _mock_topics(), "mock"
 
     try:
-        _ = subscription
         return cc98_client.get_new_posts(limit=max(1, limit)), "cc98_new_posts"
     except Exception as exc:
         if _is_production():
             raise RuntimeError(f"CC98 new posts fetch failed: {exc}") from exc
         return _mock_topics(), "mock"
+
+
+def fetch_new_topics_for_subscription(subscription: Subscription, limit: int = 20) -> tuple[list[dict[str, Any]], str]:
+    _ = subscription
+    return fetch_new_topics(limit)
 
 
 def _enabled_channels(db: Session, user_id: str) -> list[NotificationChannel]:
@@ -232,12 +236,14 @@ def run_watch_scan(db: Session) -> ScanResponse:
         metrics["scanned_subscriptions"] = len(subscriptions)
         latest_topic_id: str | None = None
         users_to_notify = {subscription.user_id for subscription in subscriptions}
+        topics: list[dict[str, Any]] = []
+        if subscriptions:
+            topics, source = fetch_new_topics()
+            metrics["fetched_topics"] = upsert_topics(db, topics)
+            for topic in topics:
+                latest_topic_id = str(topic.get("topic_id") or latest_topic_id or "")
 
         for subscription in subscriptions:
-            topics, fetch_source = fetch_new_topics_for_subscription(subscription)
-            source = fetch_source if source == "watch" else source
-            metrics["fetched_topics"] += upsert_topics(db, topics)
-
             subscription_data = {
                 "name": subscription.name,
                 "description": subscription.description,
@@ -245,7 +251,6 @@ def run_watch_scan(db: Session) -> ScanResponse:
             }
             for topic in topics:
                 metrics["candidate_pairs"] += 1
-                latest_topic_id = str(topic.get("topic_id") or latest_topic_id or "")
                 result = match_subscription_topic(subscription_data, topic)
                 if not result.matched:
                     continue

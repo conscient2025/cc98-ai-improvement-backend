@@ -77,7 +77,7 @@ python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 当前预期：
 
 ```text
-14 passed
+15 passed
 ```
 
 如果出现 FastAPI `on_event` deprecation warning，可以忽略，不影响功能。
