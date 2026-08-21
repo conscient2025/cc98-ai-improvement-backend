@@ -77,10 +77,131 @@ python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 当前预期：
 
 ```text
-12 passed
+14 passed
 ```
 
 如果出现 FastAPI `on_event` deprecation warning，可以忽略，不影响功能。
+
+## 上线前安全测试
+
+下面 4 项是公网开放前必须回归的安全测试。建议先在本地测代码逻辑，再部署服务器测真实配置。
+
+### A. 用户接口必须登录
+
+未登录直接请求：
+
+```http
+GET /api/v1/subscriptions
+```
+
+预期：HTTP 401。
+
+登录后请求：
+
+```http
+GET /api/v1/subscriptions
+Authorization: Bearer <access_token>
+```
+
+预期：HTTP 200，只返回当前 token 对应用户的订阅。
+
+再做一个越权测试：
+
+- 用用户 A 登录并创建订阅。
+- 用用户 B 登录。
+- 用用户 B 的 token 修改或删除用户 A 的订阅 ID。
+
+预期：HTTP 403，不能操作其他用户的订阅。
+
+### B. 后台接口必须有管理员密钥
+
+不带管理员密钥：
+
+```http
+POST /api/v1/tasks/scan
+```
+
+预期：HTTP 401。
+
+带错误管理员密钥：
+
+```http
+POST /api/v1/tasks/scan
+X-Admin-Token: wrong-token
+```
+
+预期：HTTP 401。
+
+带正确管理员密钥：
+
+```http
+POST /api/v1/tasks/scan
+X-Admin-Token: <ADMIN_API_TOKEN>
+```
+
+预期：HTTP 200，并返回扫描统计。
+
+`GET /api/v1/admin/health` 同样要按这个逻辑测试。
+
+### C. 验证码必须能真实发邮件
+
+本地开发模式可以这样测：
+
+```text
+AUTH_DEV_PRINT_CODE=true
+AUTH_EMAIL_DELIVERY=false
+```
+
+预期：请求验证码接口返回 `dev_code`。
+
+真实邮件模式这样测：
+
+```text
+AUTH_DEV_PRINT_CODE=false
+AUTH_EMAIL_DELIVERY=true
+SMTP_HOST=smtp.163.com
+SMTP_PORT=465
+SMTP_USE_SSL=true
+SMTP_USERNAME=cc98aiimprove@163.com
+SMTP_PASSWORD=网易邮箱授权码
+SMTP_FROM=cc98aiimprove@163.com
+```
+
+预期：
+
+- 请求验证码接口 HTTP 200。
+- 响应里 `dev_code=null`。
+- 目标浙大邮箱收到验证码邮件。
+
+如果 SMTP 配置错误，预期请求验证码接口返回 HTTP 503，不能假装发送成功。
+
+### D. 生产环境不能回退 mock
+
+设置生产模式，并故意不配置 CC98 服务账号：
+
+```text
+APP_ENV=production
+WATCH_FORCE_MOCK_TOPICS=false
+CC98_SERVICE_USERNAME=
+CC98_SERVICE_PASSWORD=
+CC98_SERVICE_REFRESH_TOKEN=
+```
+
+然后触发扫描：
+
+```http
+POST /api/v1/tasks/scan
+X-Admin-Token: <ADMIN_API_TOKEN>
+```
+
+预期：扫描明确失败，不应返回 `source=mock`。
+
+开发环境如果要用 mock，需要明确设置：
+
+```text
+APP_ENV=development
+WATCH_FORCE_MOCK_TOPICS=true
+```
 
 ## 手工测试用例
 
