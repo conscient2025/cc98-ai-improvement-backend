@@ -36,6 +36,38 @@ ENABLE_SCHEDULER=false
 
 ## 推荐接新版接口
 
+### 登录和鉴权
+
+先请求邮箱验证码：
+
+```http
+POST /api/v1/auth/request-code
+Content-Type: application/json
+```
+
+```json
+{ "email": "student@zju.edu.cn" }
+```
+
+再提交验证码换 token：
+
+```http
+POST /api/v1/auth/verify-code
+Content-Type: application/json
+```
+
+```json
+{ "email": "student@zju.edu.cn", "code": "验证码" }
+```
+
+返回里的 `access_token` 要保存下来。之后所有用户相关接口都要带：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+注意：请求体或 URL 里的 `user_id` 只为兼容旧前端保留，后端不会再信任它。真正操作的是 token 对应的当前用户。
+
 ### 健康检查
 
 ```http
@@ -49,6 +81,7 @@ GET /api/v1/health
 ```http
 POST /api/v1/subscriptions
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -59,6 +92,8 @@ Content-Type: application/json
   "board_id": null
 }
 ```
+
+`user_id` 可以不传；即使传了，后端也会使用 token 对应的用户 ID。
 
 返回重点字段：
 
@@ -90,7 +125,8 @@ Content-Type: application/json
 ### 获取订阅列表
 
 ```http
-GET /api/v1/subscriptions?user_id=demo_user
+GET /api/v1/subscriptions
+Authorization: Bearer <access_token>
 ```
 
 ### 修改订阅
@@ -98,6 +134,7 @@ GET /api/v1/subscriptions?user_id=demo_user
 ```http
 PATCH /api/v1/subscriptions/{id}
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 暂停：
@@ -116,12 +153,14 @@ Content-Type: application/json
 
 ```http
 DELETE /api/v1/subscriptions/{id}
+Authorization: Bearer <access_token>
 ```
 
 ### 手动触发新帖扫描
 
 ```http
 POST /api/v1/tasks/scan
+X-Admin-Token: <ADMIN_API_TOKEN>
 ```
 
 返回示例：
@@ -138,12 +177,13 @@ POST /api/v1/tasks/scan
 }
 ```
 
-前端 demo 可以在“立即检查新帖”按钮里调这个接口。
+这个接口属于后台/测试接口，正式前端不建议直接暴露“全局扫描”按钮。本地 demo 或测试同学要调用时，需要后端提供 `ADMIN_API_TOKEN`。
 
 ### 获取通知列表
 
 ```http
-GET /api/v1/notifications?user_id=demo_user
+GET /api/v1/notifications
+Authorization: Bearer <access_token>
 ```
 
 通知返回重点字段：
@@ -175,7 +215,8 @@ GET /api/v1/notifications?user_id=demo_user
 获取：
 
 ```http
-GET /api/v1/notification-channels?user_id=demo_user
+GET /api/v1/notification-channels
+Authorization: Bearer <access_token>
 ```
 
 保存 DingTalk：
@@ -183,6 +224,7 @@ GET /api/v1/notification-channels?user_id=demo_user
 ```http
 PUT /api/v1/notification-channels
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -202,6 +244,7 @@ Content-Type: application/json
 
 ```http
 POST /api/v1/notification-channels/test
+Authorization: Bearer <access_token>
 ```
 
 前端注意：
@@ -215,6 +258,7 @@ POST /api/v1/notification-channels/test
 ```http
 PUT /api/v1/notification-channels
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -255,6 +299,8 @@ Content-Type: application/json
 - `PUT /api/notification-settings`
 - `POST /api/notification-settings/test`
 - `POST /api/tasks/scan`
+
+这些旧接口也已经接入鉴权：用户接口仍然要带 `Authorization`，手动扫描仍然要带 `X-Admin-Token`。
 
 新开发建议优先用 `/api/v1/*`。
 

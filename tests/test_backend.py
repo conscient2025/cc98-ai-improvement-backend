@@ -12,6 +12,8 @@ from app.notifiers import build_batch_notification_text
 def _client(tmp_path: Path) -> TestClient:
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
     os.environ["AUTH_DEV_PRINT_CODE"] = "true"
+    os.environ["AUTH_EMAIL_DELIVERY"] = "false"
+    os.environ["ADMIN_API_TOKEN"] = "test-admin-token"
     os.environ["WATCH_FORCE_MOCK_TOPICS"] = "true"
     os.environ["MATCHER_FORCE_RULES"] = "true"
     os.environ["ENABLE_SCHEDULER"] = "false"
@@ -24,6 +26,20 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(main.app)
 
 
+def _login(client: TestClient, email: str = "student@zju.edu.cn") -> tuple[dict[str, str], str]:
+    code_response = client.post("/api/v1/auth/request-code", json={"email": email})
+    assert code_response.status_code == 200
+    code = code_response.json()["dev_code"]
+    assert code
+
+    verify_response = client.post("/api/v1/auth/verify-code", json={"email": email, "code": code})
+    assert verify_response.status_code == 200
+    data = verify_response.json()
+    token = data["access_token"]
+    assert token
+    return {"Authorization": f"Bearer {token}"}, data["user"]["id"]
+
+
 def test_health(tmp_path: Path) -> None:
     client = _client(tmp_path)
     response = client.get("/api/health")
@@ -33,36 +49,30 @@ def test_health(tmp_path: Path) -> None:
 
 def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
     client = _client(tmp_path)
-
-    code_response = client.post("/api/v1/auth/request-code", json={"email": "student@zju.edu.cn"})
-    assert code_response.status_code == 200
-    code = code_response.json()["dev_code"]
-    assert code
-
-    verify_response = client.post("/api/v1/auth/verify-code", json={"email": "student@zju.edu.cn", "code": code})
-    assert verify_response.status_code == 200
-    assert verify_response.json()["access_token"]
+    headers, user_id = _login(client)
 
     sub_response = client.post(
         "/api/subscribe",
+        headers=headers,
         json={"user_id": "demo_user", "topic": "CC98 AI", "description": "search and watch notification"},
     )
     assert sub_response.status_code == 200
     subscription = sub_response.json()
     assert subscription["active"] is True
     assert subscription["topic"] == "CC98 AI"
+    assert subscription["user_id"] == user_id
 
-    scan_response = client.post("/api/tasks/scan")
+    scan_response = client.post("/api/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
     assert scan_response.status_code == 200
     scan = scan_response.json()
     assert scan["scanned_subscriptions"] == 1
     assert scan["created_notifications"] >= 1
 
-    second_scan_response = client.post("/api/tasks/scan")
+    second_scan_response = client.post("/api/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
     assert second_scan_response.status_code == 200
     assert second_scan_response.json()["created_notifications"] == 0
 
-    notifications_response = client.get("/api/notifications")
+    notifications_response = client.get("/api/notifications", headers=headers)
     assert notifications_response.status_code == 200
     notifications = notifications_response.json()
     assert notifications
@@ -72,20 +82,39 @@ def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
 def test_subscription_limit(tmp_path: Path) -> None:
     os.environ["SUBSCRIPTION_LIMIT"] = "1"
     client = _client(tmp_path)
+    headers, _user_id = _login(client)
 
-    first = client.post("/api/v1/subscriptions", json={"user_id": "u1", "name": "backend", "description": "FastAPI"})
+    first = client.post("/api/v1/subscriptions", headers=headers, json={"user_id": "u1", "name": "backend", "description": "FastAPI"})
     assert first.status_code == 200
 
-    second = client.post("/api/v1/subscriptions", json={"user_id": "u1", "name": "AI", "description": "LLM"})
+    second = client.post("/api/v1/subscriptions", headers=headers, json={"user_id": "u1", "name": "AI", "description": "LLM"})
     assert second.status_code == 400
+
+
+def test_user_endpoints_require_bearer_token(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/v1/subscriptions")
+
+    assert response.status_code == 401
+
+
+def test_scan_requires_admin_token(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post("/api/v1/tasks/scan")
+
+    assert response.status_code == 401
 
 
 def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:
     os.environ["SCAN_INTERVAL_MINUTES"] = "10"
     client = _client(tmp_path)
+    headers, _user_id = _login(client)
 
     response = client.put(
         "/api/v1/notification-channels",
+        headers=headers,
         json={
             "user_id": "demo_user",
             "provider": "dingtalk",
@@ -104,8 +133,10 @@ def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:
 def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch) -> None:
     os.environ["SCAN_INTERVAL_MINUTES"] = "10"
     client = _client(tmp_path)
+    headers, user_id = _login(client)
     channel_response = client.put(
         "/api/v1/notification-channels",
+        headers=headers,
         json={
             "user_id": "demo_user",
             "provider": "dingtalk",
@@ -130,10 +161,10 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
 
     db = SessionLocal()
     try:
-        channel = db.query(NotificationChannel).filter(NotificationChannel.user_id == "demo_user").one()
+        channel = db.query(NotificationChannel).filter(NotificationChannel.user_id == user_id).one()
         channel.last_sent_at = utc_now()
         notification = Notification(
-            user_id="demo_user",
+            user_id=user_id,
             subscription_id=1,
             topic_id="interval-topic-1",
             topic_title="interval topic",
@@ -145,7 +176,7 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
         db.commit()
         db.refresh(notification)
 
-        sent = watch._send_notification_batch(db, "demo_user", [notification])
+        sent = watch._send_notification_batch(db, user_id, [notification])
 
         db.refresh(notification)
         assert sent == 0
@@ -175,6 +206,25 @@ def test_real_scan_without_board_uses_global_latest(monkeypatch) -> None:
 
     assert source == "cc98_new_posts"
     assert topics[0]["topic_id"] == "latest-1"
+
+
+def test_production_scan_does_not_fallback_to_mock(monkeypatch) -> None:
+    from app import watch
+    from app.models import Subscription
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
+    monkeypatch.delenv("CC98_SERVICE_USERNAME", raising=False)
+    monkeypatch.delenv("CC98_SERVICE_REFRESH_TOKEN", raising=False)
+
+    subscription = Subscription(user_id="demo_user", name="latest", description="latest")
+
+    try:
+        watch.fetch_new_topics_for_subscription(subscription)
+    except RuntimeError as exc:
+        assert "CC98 service account is not configured" in str(exc)
+    else:
+        raise AssertionError("production scan should fail instead of falling back to mock topics")
 
 
 def test_batch_notification_text() -> None:

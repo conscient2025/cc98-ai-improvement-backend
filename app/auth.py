@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .models import EmailVerificationCode, User
+from .notifiers import send_email
 from .utils import as_utc, expires_in_minutes, hash_secret, make_code, new_id, utc_now
 
 
@@ -20,6 +21,19 @@ def _dev_print_code_enabled() -> bool:
 def _allowed_domains() -> set[str]:
     raw = os.getenv("ZJU_EMAIL_DOMAINS", "zju.edu.cn,intl.zju.edu.cn")
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def _email_delivery_enabled() -> bool:
+    return os.getenv("AUTH_EMAIL_DELIVERY", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def _verification_email_body(code: str, expire_minutes: int) -> str:
+    return (
+        "你好，\n\n"
+        f"你的 CC98 AI 订阅提醒登录验证码是：{code}\n"
+        f"验证码 {expire_minutes} 分钟内有效，请不要转发给其他人。\n\n"
+        "如果不是你本人操作，可以忽略这封邮件。"
+    )
 
 
 def validate_zju_email(email: str) -> str:
@@ -36,6 +50,10 @@ def request_email_code(db: Session, email: str) -> tuple[str, str | None]:
     email = validate_zju_email(email)
     code = make_code()
     expire_minutes = int(os.getenv("EMAIL_CODE_EXPIRE_MINUTES", "10"))
+    dev_code_enabled = _dev_print_code_enabled()
+    email_delivery_enabled = _email_delivery_enabled()
+    if not dev_code_enabled and not email_delivery_enabled:
+        raise HTTPException(status_code=503, detail="验证码邮件发送未启用")
     record = EmailVerificationCode(
         email=email,
         code_hash=hash_secret(code),
@@ -44,8 +62,20 @@ def request_email_code(db: Session, email: str) -> tuple[str, str | None]:
     db.add(record)
     db.commit()
 
-    print(f"[CC98 AI] verification code for {email}: {code}")
-    dev_code = code if _dev_print_code_enabled() else None
+    if email_delivery_enabled:
+        result = send_email(
+            to_addr=email,
+            subject="CC98 AI 订阅提醒登录验证码",
+            body=_verification_email_body(code, expire_minutes),
+        )
+        if not result.ok:
+            if not dev_code_enabled:
+                raise HTTPException(status_code=503, detail=f"验证码邮件发送失败：{result.error or 'SMTP unavailable'}")
+            print(f"[CC98 AI] verification email failed for {email}: {result.error}")
+
+    if dev_code_enabled:
+        print(f"[CC98 AI] verification code for {email}: {code}")
+    dev_code = code if dev_code_enabled else None
     return email, dev_code
 
 

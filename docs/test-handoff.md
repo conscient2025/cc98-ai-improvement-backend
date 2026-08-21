@@ -37,6 +37,8 @@ WATCH_FORCE_MOCK_TOPICS=true
 MATCHER_FORCE_RULES=true
 ENABLE_SCHEDULER=false
 AUTH_DEV_PRINT_CODE=true
+AUTH_EMAIL_DELIVERY=false
+ADMIN_API_TOKEN=本地测试管理员密钥
 SCAN_INTERVAL_MINUTES=10
 ```
 
@@ -69,13 +71,13 @@ http://127.0.0.1:8000/docs
 
 ```powershell
 python -m compileall app tests
-python -m pytest -q
+python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 ```
 
 当前预期：
 
 ```text
-4 passed
+12 passed
 ```
 
 如果出现 FastAPI `on_event` deprecation warning，可以忽略，不影响功能。
@@ -111,6 +113,7 @@ Content-Type: application/json
 
 - HTTP 200。
 - 开发环境返回 `dev_code`。
+- 如果要测试真实邮件，把 `AUTH_EMAIL_DELIVERY=true` 并配置 SMTP；生产环境应设置 `AUTH_DEV_PRINT_CODE=false`。
 
 验证：
 
@@ -128,6 +131,7 @@ Content-Type: application/json
 - HTTP 200。
 - 返回 `access_token`。
 - 返回用户信息。
+- 后续用户接口都要带 `Authorization: Bearer <access_token>`。
 
 反例：
 
@@ -139,6 +143,7 @@ Content-Type: application/json
 ```http
 POST /api/v1/subscriptions
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -155,6 +160,7 @@ Content-Type: application/json
 - HTTP 200。
 - `status=enabled`。
 - `active=true`。
+- 返回里的 `user_id` 应是 token 对应的用户 ID，不是请求体里的 `demo_user`。
 
 关键词规则：
 
@@ -164,7 +170,8 @@ Content-Type: application/json
 ### 4. 订阅列表
 
 ```http
-GET /api/v1/subscriptions?user_id=demo_user
+GET /api/v1/subscriptions
+Authorization: Bearer <access_token>
 ```
 
 预期：
@@ -179,6 +186,7 @@ GET /api/v1/subscriptions?user_id=demo_user
 ```http
 PATCH /api/v1/subscriptions/{id}
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -205,10 +213,13 @@ SUBSCRIPTION_LIMIT=10
 
 同一个 `user_id` 创建超过 10 个启用订阅时，预期返回 400。
 
+注意：现在实际按 token 对应的用户统计，不按请求体里的 `user_id` 统计。
+
 ### 7. 手动扫描新帖
 
 ```http
 POST /api/v1/tasks/scan
+X-Admin-Token: <ADMIN_API_TOKEN>
 ```
 
 mock 模式预期：
@@ -223,7 +234,8 @@ mock 模式预期：
 ### 8. 通知历史
 
 ```http
-GET /api/v1/notifications?user_id=demo_user
+GET /api/v1/notifications
+Authorization: Bearer <access_token>
 ```
 
 预期：
@@ -240,6 +252,7 @@ GET /api/v1/notifications?user_id=demo_user
 ```http
 PUT /api/v1/notification-channels
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -259,6 +272,7 @@ Content-Type: application/json
 
 ```http
 POST /api/v1/notification-channels/test
+Authorization: Bearer <access_token>
 ```
 
 预期：
@@ -275,6 +289,7 @@ POST /api/v1/notification-channels/test
 ```http
 PUT /api/v1/notification-channels
 Content-Type: application/json
+Authorization: Bearer <access_token>
 ```
 
 ```json
@@ -294,6 +309,7 @@ Content-Type: application/json
 
 ```http
 POST /api/v1/notification-channels/test
+Authorization: Bearer <access_token>
 ```
 
 预期：
@@ -334,6 +350,7 @@ SCAN_INTERVAL_MINUTES=10
 
 ```http
 GET /api/v1/admin/health
+X-Admin-Token: <ADMIN_API_TOKEN>
 ```
 
 预期包含：
@@ -359,9 +376,12 @@ GET /api/v1/admin/health
 
 旧接口能用即可，新功能优先按 `/api/v1/*` 验证。
 
+旧接口也已经接入鉴权：用户相关旧接口要带 `Authorization`，`POST /api/tasks/scan` 要带 `X-Admin-Token`。
+
 ## 风险点
 
 - 真实 CC98 新帖抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token；扫描的是 CC98 全站新帖列表，不要求订阅带 `board_id`。
 - 真实通知依赖 DingTalk webhook 是否可用。
 - 现在匹配默认是规则匹配，`MATCHER_FORCE_RULES=false` 后才会尝试 LLM。
-- 产品登录验证码目前仍是 MVP 开发模式；网易邮箱只用于订阅帖子推送。
+- 生产环境不要开启 `WATCH_FORCE_MOCK_TOPICS`，真实 CC98 抓取失败时应直接暴露失败，不能回退 mock。
+- 产品登录验证码现在可以通过 SMTP 发送；本地开发可关闭 `AUTH_EMAIL_DELIVERY` 并用 `dev_code` 测试。

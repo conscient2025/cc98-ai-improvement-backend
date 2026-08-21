@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import hmac
 import os
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from . import models
-from .auth import request_email_code, verify_email_code
+from .auth import request_email_code, token_payload, verify_email_code
 from .cc98_client import cc98_client
 from .database import get_db, init_db
 from .env import load_dotenv
@@ -41,7 +43,22 @@ from .watch import run_watch_scan
 load_dotenv()
 init_db()
 
-app = FastAPI(title="CC98 AI Improvement Backend", version="0.1.0")
+
+def _public_docs_enabled() -> bool:
+    if os.getenv("ENABLE_PUBLIC_DOCS", "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return os.getenv("APP_ENV", "development").lower() not in {"prod", "production"}
+
+
+docs_enabled = _public_docs_enabled()
+app = FastAPI(
+    title="CC98 AI Improvement Backend",
+    version="0.1.0",
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
+)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 origins = os.getenv("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -117,16 +134,72 @@ def _notification_out(notification: models.Notification) -> NotificationOut:
     )
 
 
-def _get_or_create_channel(db: Session, payload: NotificationChannelSave) -> models.NotificationChannel:
+def _require_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+) -> models.User:
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    payload = token_payload(credentials.credentials)
+    user_id = str(payload.get("sub") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = db.get(models.User, user_id)
+    if user is None or user.status != "active":
+        raise HTTPException(status_code=401, detail="User is not active")
+    return user
+
+
+def _require_admin_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> None:
+    expected = os.getenv("ADMIN_API_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_API_TOKEN is not configured")
+    supplied = (x_admin_token or "").strip()
+    if not supplied and credentials is not None:
+        supplied = credentials.credentials
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+
+def _ensure_subscription_owner(subscription: models.Subscription, current_user: models.User) -> None:
+    if subscription.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="不能操作其他用户的订阅")
+
+
+def _legacy_notification_settings_out(db: Session, user_id: str) -> NotificationSettingOut:
     channel = (
         db.query(models.NotificationChannel)
-        .filter(models.NotificationChannel.user_id == payload.user_id, models.NotificationChannel.provider == payload.provider)
+        .filter(models.NotificationChannel.user_id == user_id, models.NotificationChannel.provider == "dingtalk")
+        .first()
+    )
+    if channel is None:
+        return NotificationSettingOut(user_id=user_id, dingtalk_enabled=False, notify_interval_minutes=effective_notify_interval_minutes({}))
+    config = json_loads(channel.config_json, {})
+    return NotificationSettingOut(
+        user_id=user_id,
+        dingtalk_enabled=channel.enabled,
+        dingtalk_webhook=config.get("webhook"),
+        has_dingtalk_secret=bool(config.get("secret")),
+        notify_interval_minutes=effective_notify_interval_minutes(config),
+        created_at=channel.created_at,
+        updated_at=channel.updated_at,
+    )
+
+
+def _get_or_create_channel(db: Session, payload: NotificationChannelSave, user_id: str | None = None) -> models.NotificationChannel:
+    target_user_id = user_id or payload.user_id
+    channel = (
+        db.query(models.NotificationChannel)
+        .filter(models.NotificationChannel.user_id == target_user_id, models.NotificationChannel.provider == payload.provider)
         .first()
     )
     if channel is None:
         config = with_effective_notify_interval(payload.config, payload.notify_interval_minutes)
         channel = models.NotificationChannel(
-            user_id=payload.user_id,
+            user_id=target_user_id,
             provider=payload.provider,
             config_json=json_dumps(config),
             enabled=payload.enabled,
@@ -186,21 +259,25 @@ def auth_verify_code(payload: AuthVerifyCodeIn, db: Session = Depends(get_db)) -
 
 @app.post("/api/v1/subscriptions", response_model=SubscriptionOut)
 @app.post("/api/subscribe", response_model=SubscriptionOut)
-def create_subscription(payload: SubscriptionCreate, db: Session = Depends(get_db)) -> SubscriptionOut:
+def create_subscription(
+    payload: SubscriptionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> SubscriptionOut:
     name = normalize_topic_text(payload.name or payload.topic or "")
     description = normalize_topic_text(payload.description or payload.topic or payload.name or "")
     if not name:
         raise HTTPException(status_code=400, detail="订阅名称不能为空")
     active_count = (
         db.query(models.Subscription)
-        .filter(models.Subscription.user_id == payload.user_id, models.Subscription.status == "enabled")
+        .filter(models.Subscription.user_id == current_user.id, models.Subscription.status == "enabled")
         .count()
     )
     limit = int(os.getenv("SUBSCRIPTION_LIMIT", "10"))
     if active_count >= limit:
         raise HTTPException(status_code=400, detail=f"最多只能启用 {limit} 个订阅")
     subscription = models.Subscription(
-        user_id=payload.user_id,
+        user_id=current_user.id,
         name=name,
         description=description,
         board_id=payload.board_id,
@@ -215,16 +292,27 @@ def create_subscription(payload: SubscriptionCreate, db: Session = Depends(get_d
 @app.get("/api/v1/subscriptions", response_model=list[SubscriptionOut])
 @app.get("/api/subscriptions", response_model=list[SubscriptionOut])
 @app.get("/api/admin/subscriptions", response_model=list[SubscriptionOut])
-def list_subscriptions(user_id: str = Query("demo_user"), db: Session = Depends(get_db)) -> list[SubscriptionOut]:
-    rows = db.query(models.Subscription).filter(models.Subscription.user_id == user_id).order_by(models.Subscription.id.desc()).all()
+def list_subscriptions(
+    user_id: str = Query("demo_user"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> list[SubscriptionOut]:
+    _ = user_id
+    rows = db.query(models.Subscription).filter(models.Subscription.user_id == current_user.id).order_by(models.Subscription.id.desc()).all()
     return [_subscription_out(row) for row in rows]
 
 
 @app.patch("/api/v1/subscriptions/{subscription_id}", response_model=SubscriptionOut)
-def update_subscription(subscription_id: int, payload: SubscriptionUpdate, db: Session = Depends(get_db)) -> SubscriptionOut:
+def update_subscription(
+    subscription_id: int,
+    payload: SubscriptionUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> SubscriptionOut:
     subscription = db.get(models.Subscription, subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="订阅不存在")
+    _ensure_subscription_owner(subscription, current_user)
     if payload.name is not None:
         subscription.name = normalize_topic_text(payload.name)
     if payload.description is not None:
@@ -241,30 +329,48 @@ def update_subscription(subscription_id: int, payload: SubscriptionUpdate, db: S
 
 @app.delete("/api/v1/subscriptions/{subscription_id}")
 @app.delete("/api/subscribe/{subscription_id}")
-def delete_subscription(subscription_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+def delete_subscription(
+    subscription_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> dict[str, Any]:
     subscription = db.get(models.Subscription, subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="订阅不存在")
+    _ensure_subscription_owner(subscription, current_user)
     db.delete(subscription)
     db.commit()
     return {"status": "ok", "deleted": subscription_id}
 
 
 @app.get("/api/v1/notification-channels", response_model=list[NotificationChannelOut])
-def list_channels(user_id: str = Query("demo_user"), db: Session = Depends(get_db)) -> list[NotificationChannelOut]:
-    rows = db.query(models.NotificationChannel).filter(models.NotificationChannel.user_id == user_id).all()
+def list_channels(
+    user_id: str = Query("demo_user"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> list[NotificationChannelOut]:
+    _ = user_id
+    rows = db.query(models.NotificationChannel).filter(models.NotificationChannel.user_id == current_user.id).all()
     return [_channel_out(row) for row in rows]
 
 
 @app.put("/api/v1/notification-channels", response_model=NotificationChannelOut)
-def save_channel(payload: NotificationChannelSave, db: Session = Depends(get_db)) -> NotificationChannelOut:
-    return _channel_out(_get_or_create_channel(db, payload))
+def save_channel(
+    payload: NotificationChannelSave,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> NotificationChannelOut:
+    return _channel_out(_get_or_create_channel(db, payload, current_user.id))
 
 
 @app.post("/api/v1/notification-channels/test")
-def test_channel(payload: NotificationChannelSave, db: Session = Depends(get_db)) -> dict[str, Any]:
+def test_channel(
+    payload: NotificationChannelSave,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> dict[str, Any]:
     result = send_notification(payload.provider, payload.config, "CC98 AI Watch 测试通知", "https://www.cc98.org", "如果你收到这条消息，说明通知通道可用")
-    channel = _get_or_create_channel(db, payload)
+    channel = _get_or_create_channel(db, payload, current_user.id)
     channel.last_test_at = utc_now()
     channel.last_test_status = result.status
     channel.last_error = result.error
@@ -275,44 +381,42 @@ def test_channel(payload: NotificationChannelSave, db: Session = Depends(get_db)
 
 
 @app.get("/api/notification-settings", response_model=NotificationSettingOut)
-def get_legacy_notification_settings(user_id: str = Query("demo_user"), db: Session = Depends(get_db)) -> NotificationSettingOut:
-    channel = (
-        db.query(models.NotificationChannel)
-        .filter(models.NotificationChannel.user_id == user_id, models.NotificationChannel.provider == "dingtalk")
-        .first()
-    )
-    if channel is None:
-        return NotificationSettingOut(user_id=user_id, dingtalk_enabled=False, notify_interval_minutes=effective_notify_interval_minutes({}))
-    config = json_loads(channel.config_json, {})
-    return NotificationSettingOut(
-        user_id=user_id,
-        dingtalk_enabled=channel.enabled,
-        dingtalk_webhook=config.get("webhook"),
-        has_dingtalk_secret=bool(config.get("secret")),
-        notify_interval_minutes=effective_notify_interval_minutes(config),
-        created_at=channel.created_at,
-        updated_at=channel.updated_at,
-    )
+def get_legacy_notification_settings(
+    user_id: str = Query("demo_user"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> NotificationSettingOut:
+    _ = user_id
+    return _legacy_notification_settings_out(db, current_user.id)
 
 
 @app.put("/api/notification-settings", response_model=NotificationSettingOut)
-def save_legacy_notification_settings(payload: NotificationSettingSave, db: Session = Depends(get_db)) -> NotificationSettingOut:
+def save_legacy_notification_settings(
+    payload: NotificationSettingSave,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> NotificationSettingOut:
     channel_payload = NotificationChannelSave(
-        user_id=payload.user_id,
+        user_id=current_user.id,
         provider="dingtalk",
         enabled=payload.dingtalk_enabled,
         config={"webhook": payload.dingtalk_webhook or "", "secret": payload.dingtalk_secret or ""},
         notify_interval_minutes=payload.notify_interval_minutes,
     )
-    _get_or_create_channel(db, channel_payload)
-    return get_legacy_notification_settings(payload.user_id, db)
+    _get_or_create_channel(db, channel_payload, current_user.id)
+    return _legacy_notification_settings_out(db, current_user.id)
 
 
 @app.post("/api/notification-settings/test")
-def test_legacy_notification_settings(payload: NotificationSettingTest, db: Session = Depends(get_db)) -> dict[str, Any]:
+def test_legacy_notification_settings(
+    payload: NotificationSettingTest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> dict[str, Any]:
+    _ = payload.user_id
     channel = (
         db.query(models.NotificationChannel)
-        .filter(models.NotificationChannel.user_id == payload.user_id, models.NotificationChannel.provider == "dingtalk")
+        .filter(models.NotificationChannel.user_id == current_user.id, models.NotificationChannel.provider == "dingtalk")
         .first()
     )
     if channel is None:
@@ -330,10 +434,15 @@ def test_legacy_notification_settings(payload: NotificationSettingTest, db: Sess
 
 @app.get("/api/v1/notifications", response_model=list[NotificationOut])
 @app.get("/api/notifications", response_model=list[NotificationOut])
-def list_notifications(user_id: str = Query("demo_user"), db: Session = Depends(get_db)) -> list[NotificationOut]:
+def list_notifications(
+    user_id: str = Query("demo_user"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> list[NotificationOut]:
+    _ = user_id
     rows = (
         db.query(models.Notification)
-        .filter(models.Notification.user_id == user_id)
+        .filter(models.Notification.user_id == current_user.id)
         .order_by(models.Notification.id.desc())
         .limit(100)
         .all()
@@ -343,12 +452,12 @@ def list_notifications(user_id: str = Query("demo_user"), db: Session = Depends(
 
 @app.post("/api/v1/tasks/scan", response_model=ScanResponse)
 @app.post("/api/tasks/scan", response_model=ScanResponse)
-def run_scan(db: Session = Depends(get_db)) -> ScanResponse:
+def run_scan(_admin: None = Depends(_require_admin_token), db: Session = Depends(get_db)) -> ScanResponse:
     return run_watch_scan(db)
 
 
 @app.get("/api/v1/admin/health", response_model=AdminHealthOut)
-def admin_health(db: Session = Depends(get_db)) -> AdminHealthOut:
+def admin_health(_admin: None = Depends(_require_admin_token), db: Session = Depends(get_db)) -> AdminHealthOut:
     cc98_status = cc98_client.probe()
     workers = {
         row.name: {

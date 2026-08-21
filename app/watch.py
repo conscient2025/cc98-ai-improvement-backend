@@ -17,6 +17,10 @@ from .schemas import ScanResponse
 from .utils import json_dumps, json_loads
 
 
+def _is_production() -> bool:
+    return os.getenv("APP_ENV", "development").lower() in {"prod", "production"}
+
+
 def _mock_topics() -> list[dict[str, Any]]:
     now = datetime.now(timezone.utc).isoformat()
     return [
@@ -91,14 +95,20 @@ def upsert_topics(db: Session, topics: Iterable[dict[str, Any]]) -> int:
 
 def fetch_new_topics_for_subscription(subscription: Subscription, limit: int = 20) -> tuple[list[dict[str, Any]], str]:
     if os.getenv("WATCH_FORCE_MOCK_TOPICS", "").lower() in {"1", "true", "yes", "on"}:
+        if _is_production():
+            raise RuntimeError("WATCH_FORCE_MOCK_TOPICS must be disabled in production")
         return _mock_topics(), "mock"
     if not os.getenv("CC98_SERVICE_USERNAME") and not os.getenv("CC98_SERVICE_REFRESH_TOKEN"):
+        if _is_production():
+            raise RuntimeError("CC98 service account is not configured")
         return _mock_topics(), "mock"
 
     try:
         _ = subscription
         return cc98_client.get_new_posts(limit=max(1, limit)), "cc98_new_posts"
-    except Exception:
+    except Exception as exc:
+        if _is_production():
+            raise RuntimeError(f"CC98 new posts fetch failed: {exc}") from exc
         return _mock_topics(), "mock"
 
 

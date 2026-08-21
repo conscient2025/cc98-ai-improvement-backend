@@ -35,7 +35,11 @@ def json_loads(text: str | None, default: Any = None) -> Any:
 
 
 def hash_secret(value: str) -> str:
-    salt = os.getenv("AUTH_HASH_SALT", "cc98-ai-dev-salt")
+    salt = os.getenv("JWT_SECRET") or os.getenv("AUTH_HASH_SALT")
+    if not salt:
+        if os.getenv("APP_ENV", "development").lower() in {"prod", "production"}:
+            raise RuntimeError("JWT_SECRET must be configured in production")
+        salt = "cc98-ai-dev-secret"
     digest = hmac.new(salt.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
     return digest
 
@@ -56,4 +60,3 @@ def expires_in_minutes(minutes: int) -> datetime:
 
 def normalize_topic_text(value: str) -> str:
     return " ".join(str(value or "").strip().split())
-

@@ -29,9 +29,29 @@ MATCHER_FORCE_RULES=true
 WATCH_FORCE_MOCK_TOPICS=true
 ENABLE_SCHEDULER=false
 SCAN_INTERVAL_MINUTES=10
+AUTH_DEV_PRINT_CODE=true
+AUTH_EMAIL_DELIVERY=false
 ```
 
 这样即使暂时没有 CC98 公共账号，也能用 mock 数据跑完整流程。
+
+## 登录鉴权
+
+用户先用浙大邮箱验证码登录，拿到 `access_token` 后，前端调用订阅、通知渠道、通知历史等用户接口时都要带：
+
+```http
+Authorization: Bearer <access_token>
+```
+
+后端会从 token 里识别当前用户，不再信任请求体或查询参数里的 `user_id`。为了兼容旧前端，接口里暂时还保留 `user_id` 字段，但它不会决定实际操作哪个用户。
+
+手动扫描和管理健康检查属于后台接口，需要单独的管理员密钥：
+
+```http
+X-Admin-Token: <ADMIN_API_TOKEN>
+```
+
+生产环境必须配置强随机的 `JWT_SECRET` 和 `ADMIN_API_TOKEN`，不要使用 `.env.example` 里的示例值。
 
 ## 真实 CC98 新帖扫描
 
@@ -58,6 +78,15 @@ SMTP_USERNAME=你的网易邮箱
 SMTP_PASSWORD=网易邮箱授权码
 SMTP_FROM=你的网易邮箱
 ```
+
+验证码邮件也复用这套 SMTP 配置。生产环境建议：
+
+```text
+AUTH_DEV_PRINT_CODE=false
+AUTH_EMAIL_DELIVERY=true
+```
+
+这样验证码只会发到用户邮箱，不会在接口返回或日志中直接暴露。
 
 如果使用 126 邮箱，通常把 `SMTP_HOST` 改成：
 
@@ -106,4 +135,7 @@ POST   /api/tasks/scan
 - 不要把用户自己的 CC98 Token 上传到后端。
 - 不要把用户自己的 LLM API Key 上传到后端。
 - 不要提交 `.env`、数据库文件、token、密码、webhook secret。
+- 生产环境不要使用 `CORS_ORIGINS=*`，应改成实际前端来源。
+- 生产环境建议设置 `APP_ENV=production`、`ENABLE_PUBLIC_DOCS=false`、`WATCH_FORCE_MOCK_TOPICS=false`。
+- 生产环境 CC98 拉取失败时不会自动回退 mock 数据，应通过 `/api/v1/admin/health` 或日志排查服务账号/RVPN/网络问题。
 - CC98 帖子标题和正文都属于不可信输入，传给模型前必须做边界控制和结构校验。
