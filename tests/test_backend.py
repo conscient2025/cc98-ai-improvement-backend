@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.matcher import rule_match
-from app.notifiers import build_batch_notification_text
+from app.notifiers import SendResult, build_batch_notification_text
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -79,7 +79,7 @@ def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
     assert notifications_response.status_code == 200
     notifications = notifications_response.json()
     assert notifications
-    assert notifications[0]["delivery_status"] in {"skipped", "sent", "failed"}
+    assert notifications[0]["delivery_status"] in {"pending", "sent", "failed"}
 
 
 def test_subscription_limit(tmp_path: Path) -> None:
@@ -170,6 +170,52 @@ def test_scan_fetches_global_latest_posts_once_for_multiple_subscriptions(tmp_pa
     assert data["fetched_topics"] == 2
     assert data["candidate_pairs"] == 4
     assert data["created_notifications"] >= 2
+
+
+def test_pending_notifications_are_sent_after_channel_is_configured(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+
+    created = client.post("/api/v1/subscriptions", headers=headers, json={"name": "CC98 AI", "description": ""})
+    assert created.status_code == 200
+
+    first_scan = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+    assert first_scan.status_code == 200
+    assert first_scan.json()["created_notifications"] >= 1
+
+    notifications_response = client.get("/api/v1/notifications", headers=headers)
+    assert notifications_response.status_code == 200
+    assert notifications_response.json()[0]["delivery_status"] == "pending"
+
+    channel_response = client.put(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={
+            "provider": "dingtalk",
+            "enabled": True,
+            "notify_interval_minutes": 10,
+            "config": {"webhook": "https://example.com/webhook", "secret": ""},
+        },
+    )
+    assert channel_response.status_code == 200
+
+    from app import watch
+
+    sent_batches: list[object] = []
+
+    def fake_send_batch_notification(*args, **kwargs):
+        sent_batches.append((args, kwargs))
+        return SendResult(ok=True, status="sent")
+
+    monkeypatch.setattr(watch, "send_batch_notification", fake_send_batch_notification)
+
+    second_scan = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+
+    assert second_scan.status_code == 200
+    assert second_scan.json()["created_notifications"] == 0
+    assert second_scan.json()["sent_notifications"] >= 1
+    assert len(sent_batches) == 1
+    assert client.get("/api/v1/notifications", headers=headers).json()[0]["delivery_status"] == "sent"
 
 
 def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:

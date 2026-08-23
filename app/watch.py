@@ -147,9 +147,6 @@ def _send_notification_batch(db: Session, user_id: str, notifications: list[Noti
 
     channels = _enabled_channels(db, user_id)
     if not channels:
-        for notification in notifications:
-            notification.delivery_status = "skipped"
-        db.commit()
         return 0
 
     now = utc_now()

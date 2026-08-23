@@ -77,7 +77,7 @@ python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 当前预期：
 
 ```text
-15 passed
+16 passed
 ```
 
 如果出现 FastAPI `on_event` deprecation warning，可以忽略，不影响功能。
@@ -352,6 +352,8 @@ mock 模式预期：
 - 第二次重复扫描 `created_notifications=0`，因为通知有唯一约束。
 - 如果本次有多个新通知，DingTalk/邮箱应收到一条聚合消息，而不是多条刷屏消息。
 
+重要：如果扫描时还没有配置通知渠道，匹配通知会保留为 `delivery_status=pending`。之后配置好 DingTalk/邮箱，再触发下一轮扫描，后端会把这些 pending 通知补发出去。
+
 ### 8. 通知历史
 
 ```http
@@ -363,10 +365,53 @@ Authorization: Bearer <access_token>
 
 - 返回通知数组。
 - 每条通知有 `topic_title`、`topic_url`、`matched_reason`。
-- 未配置通知渠道时 `delivery_status=skipped`。
+- 未配置通知渠道时 `delivery_status=pending`，配置渠道后下一轮扫描可补发。
 - `matched_reason` 应显示命中的搜索表达式，例如 `命中搜索表达式：微甲 + 历年卷 + 资料`。
 
-### 9. DingTalk 通知渠道
+### 9. 真实订阅通知全链路
+
+这组测试用于排查“明明有匹配主题但没收到通知”的问题。建议用当前 CC98 新帖里已经能看到的词，例如军训季可以用 `军训`，不要用单字关键词。
+
+步骤：
+
+1. 登录拿到 `access_token`。
+2. 先保存一个通知渠道，DingTalk 或邮箱任选一种。
+3. 调通知渠道测试接口，确认能收到测试消息。
+4. 创建订阅，例如：
+
+```json
+{ "name": "军训", "description": "" }
+```
+
+5. 手动触发扫描：
+
+```http
+POST /api/v1/tasks/scan
+X-Admin-Token: <ADMIN_API_TOKEN>
+```
+
+6. 看扫描返回值：
+
+- `source` 应为 `cc98_new_posts`，真实扫描不应是 `mock`。
+- `fetched_topics > 0` 表示确实拉到了 CC98 新帖。
+- `matched_pairs > 0` 表示订阅命中了帖子。
+- `created_notifications > 0` 表示生成了通知记录。
+- `sent_notifications > 0` 表示已经推送到 DingTalk/邮箱。
+
+如果 `matched_pairs > 0` 但 `sent_notifications=0`，再查：
+
+```http
+GET /api/v1/notification-channels
+Authorization: Bearer <access_token>
+```
+
+确认：
+
+- 渠道 `enabled=true`。
+- DingTalk webhook 或邮箱收件地址配置正确。
+- `notify_interval_minutes` 没有设置得太长；如果设置 60 分钟，未到时间会先保留 pending，之后聚合发送。
+
+### 10. DingTalk 通知渠道
 
 保存配置：
 
@@ -403,7 +448,7 @@ Authorization: Bearer <access_token>
 - 获取配置时 secret 被隐藏为 `***`。
 - 返回的 `notify_interval_minutes` 是实际生效值，不会小于 `SCAN_INTERVAL_MINUTES`。
 
-### 10. 邮箱通知渠道
+### 11. 邮箱通知渠道
 
 保存配置：
 
@@ -439,7 +484,7 @@ Authorization: Bearer <access_token>
 - SMTP 配置错误：HTTP 400，并返回错误原因。
 - 扫描有多个新帖子时，只收到一封聚合邮件。
 
-### 11. 通知频率
+### 12. 通知频率
 
 如果 `.env` 里：
 
@@ -467,7 +512,7 @@ SCAN_INTERVAL_MINUTES=10
 - 接口返回 `notify_interval_minutes=10`，因为通知不能比扫描更频繁。
 - 如果用户设置 `notify_interval_minutes=60`，后端会先生成通知记录，但不到 60 分钟不会推送；到时间后把期间积累的匹配帖子聚合成一条消息。
 
-### 12. 管理健康状态
+### 13. 管理健康状态
 
 ```http
 GET /api/v1/admin/health
