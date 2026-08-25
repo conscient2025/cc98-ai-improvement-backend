@@ -141,15 +141,17 @@ def _is_channel_due(channel: NotificationChannel, config: dict[str, Any], now: d
     return now - last_sent_at >= interval
 
 
-def _send_notification_batch(db: Session, user_id: str, notifications: list[Notification]) -> int:
-    if not notifications:
-        return 0
+def _channel_destination_key(channel: NotificationChannel, config: dict[str, Any]) -> str:
+    if channel.provider == "dingtalk":
+        destination = str(config.get("webhook") or "").strip()
+    elif channel.provider == "email":
+        destination = str(config.get("to") or config.get("to_email") or config.get("email") or config.get("recipient") or "").strip().lower()
+    else:
+        destination = json_dumps(config)
+    return f"{channel.provider}:{destination}"
 
-    channels = _enabled_channels(db, user_id)
-    if not channels:
-        return 0
 
-    now = utc_now()
+def _unique_by_topic(notifications: list[Notification]) -> list[Notification]:
     unique_notifications: list[Notification] = []
     seen_topic_ids: set[str] = set()
     for notification in notifications:
@@ -158,33 +160,69 @@ def _send_notification_batch(db: Session, user_id: str, notifications: list[Noti
             continue
         seen_topic_ids.add(topic_key)
         unique_notifications.append(notification)
+    return unique_notifications
 
-    items: list[NotificationItem] = [
-        {
-            "title": notification.topic_title,
-            "url": notification.topic_url,
-            "reason": notification.matched_reason,
-        }
-        for notification in unique_notifications
-    ]
+
+def _mark_notifications_sent(notifications: list[Notification], provider: str, now: datetime) -> None:
+    for notification in notifications:
+        notification.delivery_channel = provider
+        notification.delivery_status = "sent"
+        notification.sent_at = now
+
+
+def _send_notification_batch(
+    db: Session,
+    user_id: str,
+    notifications: list[Notification],
+    sent_topics_by_destination: dict[str, set[str]] | None = None,
+) -> int:
+    if not notifications:
+        return 0
+
+    channels = _enabled_channels(db, user_id)
+    if not channels:
+        return 0
+
+    now = utc_now()
+    unique_notifications = _unique_by_topic(notifications)
+
+    sent_topics_by_destination = sent_topics_by_destination if sent_topics_by_destination is not None else {}
 
     for channel in channels:
         config = json_loads(channel.config_json, {})
         if not _is_channel_due(channel, config, now):
             continue
+        destination_key = _channel_destination_key(channel, config)
+        already_sent_topic_ids = sent_topics_by_destination.setdefault(destination_key, set())
+        notifications_to_send = [notification for notification in unique_notifications if str(notification.topic_id) not in already_sent_topic_ids]
+        duplicate_notifications = [notification for notification in notifications if str(notification.topic_id) in already_sent_topic_ids]
+        if duplicate_notifications:
+            _mark_notifications_sent(duplicate_notifications, channel.provider, now)
+        if not notifications_to_send:
+            channel.last_test_status = "deduplicated"
+            channel.last_error = None
+            db.commit()
+            return len(duplicate_notifications)
+
+        items: list[NotificationItem] = [
+            {
+                "title": notification.topic_title,
+                "url": notification.topic_url,
+                "reason": notification.matched_reason,
+            }
+            for notification in notifications_to_send
+        ]
         result = send_batch_notification(channel.provider, config, items)
         channel.last_test_status = result.status
         channel.last_error = result.error
         if result.ok:
             channel.last_sent_at = now
-            for notification in notifications:
-                notification.delivery_channel = channel.provider
-                notification.delivery_status = "sent"
-                notification.sent_at = now
+            _mark_notifications_sent(notifications, channel.provider, now)
+            already_sent_topic_ids.update(str(notification.topic_id) for notification in notifications_to_send)
             db.commit()
             return len(notifications)
 
-        for notification in notifications:
+        for notification in notifications_to_send:
             notification.delivery_channel = channel.provider
             notification.delivery_status = "failed"
 
@@ -278,8 +316,9 @@ def run_watch_scan(db: Session) -> ScanResponse:
                     continue
                 metrics["created_notifications"] += 1
 
+        sent_topics_by_destination: dict[str, set[str]] = {}
         for user_id in users_to_notify:
-            metrics["sent_notifications"] += _send_notification_batch(db, user_id, _pending_notifications(db, user_id))
+            metrics["sent_notifications"] += _send_notification_batch(db, user_id, _pending_notifications(db, user_id), sent_topics_by_destination)
 
         if latest_topic_id:
             _update_cursor(db, "cc98_watch:last_topic_id", latest_topic_id)
