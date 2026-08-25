@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.matcher import rule_match
-from app.notifiers import SendResult, build_batch_notification_text
+from app.notifiers import SendResult, build_batch_notification_text, send_email_notification
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -348,6 +348,31 @@ def test_batch_notification_text() -> None:
     assert "2 个匹配帖子" in text
     assert "topic 1" in text
     assert "topic 2" in text
+
+
+def test_email_notification_accepts_to_email(monkeypatch) -> None:
+    from app import notifiers
+
+    captured: dict[str, object] = {}
+
+    def fake_send_email(to_addr: str, subject: str, body: str, config: dict[str, object] | None = None) -> SendResult:
+        captured["to_addr"] = to_addr
+        captured["subject"] = subject
+        captured["body"] = body
+        captured["config"] = config
+        return SendResult(ok=True, status="sent")
+
+    monkeypatch.setattr(notifiers, "_send_email", fake_send_email)
+
+    result = send_email_notification(
+        {"to_email": "student@qq.com", "subject_prefix": "CC98 订阅提醒"},
+        "测试内容",
+        count=2,
+    )
+
+    assert result.ok is True
+    assert captured["to_addr"] == "student@qq.com"
+    assert captured["subject"] == "CC98 订阅提醒：2 个新匹配帖子"
 
 
 def test_keyword_expression_uses_space_and_slash_synonym_or() -> None:

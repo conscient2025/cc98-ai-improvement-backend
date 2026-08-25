@@ -132,7 +132,7 @@ def send_email(to_addr: str, subject: str, body: str, config: dict[str, Any] | N
 
 
 def send_email_notification(config: dict[str, Any], text: str, count: int = 1) -> SendResult:
-    to_addr = str(config.get("to") or config.get("email") or config.get("recipient") or "").strip()
+    to_addr = str(config.get("to") or config.get("to_email") or config.get("email") or config.get("recipient") or "").strip()
     subject_prefix = str(config.get("subject_prefix") or "CC98 订阅提醒")
     subject = f"{subject_prefix}：{count} 个新匹配帖子"
     return _send_email(to_addr=to_addr, subject=subject, body=text, config=config)
