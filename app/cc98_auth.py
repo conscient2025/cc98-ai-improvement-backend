@@ -8,6 +8,12 @@ from typing import Any
 
 import httpx
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _cc98_trust_env() -> bool:
+    return os.getenv("CC98_TRUST_ENV", "false").lower() in _TRUE_VALUES
+
 
 @dataclass
 class TokenState:
@@ -79,6 +85,7 @@ class CC98ServiceAuth:
                 data=payload,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=self.timeout,
+                trust_env=_cc98_trust_env(),
             )
             response.raise_for_status()
             body = response.json()
@@ -131,4 +138,3 @@ class CC98ServiceAuth:
 
 
 service_auth = CC98ServiceAuth()
-

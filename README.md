@@ -60,9 +60,12 @@ X-Admin-Token: <ADMIN_API_TOKEN>
 ```text
 CC98_SERVICE_USERNAME=
 CC98_SERVICE_PASSWORD=
+CC98_TRUST_ENV=false
 ```
 
 后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取 CC98 全站新帖列表，再和订阅关键词/说明做匹配。
+
+`CC98_TRUST_ENV=false` 表示访问 CC98 时不读取本机 `HTTP_PROXY` / `HTTPS_PROXY` 等系统代理环境变量。开发机开了 Clash、代理但 CC98 直连可用时，建议保持 `false`，否则可能出现 TLS 握手超时。如果部署环境必须通过代理访问 CC98，再改成 `true`。
 
 ## 网易邮箱发订阅推送
 

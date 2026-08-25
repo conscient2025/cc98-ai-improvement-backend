@@ -11,6 +11,12 @@ import httpx
 
 from .cc98_auth import service_auth
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _cc98_trust_env() -> bool:
+    return os.getenv("CC98_TRUST_ENV", "false").lower() in _TRUE_VALUES
+
 
 class CC98APIError(RuntimeError):
     def __init__(self, method: str, url: str, status_code: int, body: str):
@@ -34,7 +40,7 @@ class CC98ServiceClient:
 
     def probe(self) -> dict[str, Any]:
         try:
-            response = httpx.get(self._url("/me"), timeout=self.timeout)
+            response = httpx.get(self._url("/me"), timeout=self.timeout, trust_env=_cc98_trust_env())
             reachable = response.status_code in {200, 401, 403}
             if reachable:
                 self.last_success_at = datetime.utcnow()
@@ -91,11 +97,23 @@ class CC98ServiceClient:
 
     def _get_json(self, path: str, *, params: dict[str, Any] | None = None, retry_auth: bool = True) -> Any:
         headers = service_auth.auth_header()
-        response = httpx.get(self._url(path), params=params, headers=headers, timeout=self.timeout)
+        response = httpx.get(
+            self._url(path),
+            params=params,
+            headers=headers,
+            timeout=self.timeout,
+            trust_env=_cc98_trust_env(),
+        )
         if response.status_code in {401, 403} and retry_auth:
             service_auth.mark_auth_failed()
             headers = service_auth.auth_header()
-            response = httpx.get(self._url(path), params=params, headers=headers, timeout=self.timeout)
+            response = httpx.get(
+                self._url(path),
+                params=params,
+                headers=headers,
+                timeout=self.timeout,
+                trust_env=_cc98_trust_env(),
+            )
         if response.status_code < 200 or response.status_code >= 300:
             self.last_error = response.text
             raise CC98APIError("GET", str(response.url), response.status_code, response.text)

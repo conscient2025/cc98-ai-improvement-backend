@@ -48,7 +48,10 @@ SCAN_INTERVAL_MINUTES=10
 CC98_SERVICE_USERNAME=公共 CC98 账号
 CC98_SERVICE_PASSWORD=公共 CC98 密码
 WATCH_FORCE_MOCK_TOPICS=false
+CC98_TRUST_ENV=false
 ```
+
+`CC98_TRUST_ENV=false` 表示后端访问 CC98 时不读取本机系统代理。测试机如果开了 Clash 但直连 CC98 可用，保持这个值即可；只有确实需要后端通过系统代理访问 CC98 时才改成 `true`。
 
 如果要测试真实网易邮箱订阅推送，把 `.env` 改成：
 

@@ -387,3 +387,35 @@ def test_keyword_expression_can_model_a_and_b_or_c() -> None:
 
     assert result.matched is True
     assert "计院 + 推免" in result.reason
+
+
+def test_cc98_requests_ignore_system_proxy_by_default(monkeypatch) -> None:
+    from app import cc98_auth, cc98_client
+
+    monkeypatch.delenv("CC98_TRUST_ENV", raising=False)
+    captured: list[tuple[str, bool]] = []
+
+    class TokenResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"access_token": "token", "expires_in": 3600}
+
+    class ProbeResponse:
+        status_code = 401
+
+    def fake_post(*args, **kwargs):
+        captured.append(("post", kwargs["trust_env"]))
+        return TokenResponse()
+
+    def fake_get(*args, **kwargs):
+        captured.append(("get", kwargs["trust_env"]))
+        return ProbeResponse()
+
+    monkeypatch.setattr(cc98_auth.httpx, "post", fake_post)
+    monkeypatch.setattr(cc98_client.httpx, "get", fake_get)
+
+    assert cc98_auth.CC98ServiceAuth()._post_token({"grant_type": "password"})
+    assert cc98_client.CC98ServiceClient().probe()["reachable"] is True
+    assert captured == [("post", False), ("get", False)]
