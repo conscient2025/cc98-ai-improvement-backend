@@ -118,6 +118,7 @@ python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 
 - 前端同学：`docs/frontend-handoff.md`
 - 测试同学：`docs/test-handoff.md`
+- 组长/部署同学：`docs/deployment-handoff.md`
 - 接口总览：`interfaces.md`
 
 为了兼容之前仓库里的前端，也保留了旧接口：
