@@ -150,13 +150,22 @@ def _send_notification_batch(db: Session, user_id: str, notifications: list[Noti
         return 0
 
     now = utc_now()
+    unique_notifications: list[Notification] = []
+    seen_topic_ids: set[str] = set()
+    for notification in notifications:
+        topic_key = str(notification.topic_id)
+        if topic_key in seen_topic_ids:
+            continue
+        seen_topic_ids.add(topic_key)
+        unique_notifications.append(notification)
+
     items: list[NotificationItem] = [
         {
             "title": notification.topic_title,
             "url": notification.topic_url,
             "reason": notification.matched_reason,
         }
-        for notification in notifications
+        for notification in unique_notifications
     ]
 
     for channel in channels:

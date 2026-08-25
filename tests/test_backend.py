@@ -94,6 +94,19 @@ def test_subscription_limit(tmp_path: Path) -> None:
     assert second.status_code == 400
 
 
+def test_duplicate_subscription_is_rejected(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+    payload = {"name": "大一/求助/军训", "description": ""}
+
+    first = client.post("/api/v1/subscriptions", headers=headers, json=payload)
+    second = client.post("/api/v1/subscriptions", headers=headers, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert "相同的订阅" in second.json()["detail"]
+
+
 def test_user_endpoints_require_bearer_token(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -293,6 +306,69 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
         assert sent == 0
         assert calls == []
         assert notification.delivery_status == "pending"
+    finally:
+        db.close()
+
+
+def test_notification_batch_dedupes_same_topic(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    headers, user_id = _login(client)
+    channel_response = client.put(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={
+            "provider": "dingtalk",
+            "enabled": True,
+            "notify_interval_minutes": 10,
+            "config": {"webhook": "https://example.com/webhook", "secret": ""},
+        },
+    )
+    assert channel_response.status_code == 200
+
+    from app import watch
+    from app.database import SessionLocal
+    from app.models import Notification
+
+    captured_items: list[list[dict[str, str | None]]] = []
+
+    def fake_send_batch_notification(provider, config, items):
+        captured_items.append(items)
+        return SendResult(ok=True, status="sent")
+
+    monkeypatch.setattr(watch, "send_batch_notification", fake_send_batch_notification)
+
+    db = SessionLocal()
+    try:
+        first = Notification(
+            user_id=user_id,
+            subscription_id=1,
+            topic_id="same-topic",
+            topic_title="同一个帖子",
+            topic_url="https://www.cc98.org/topic/same-topic",
+            matched_reason="命中搜索表达式：求助",
+            delivery_status="pending",
+        )
+        second = Notification(
+            user_id=user_id,
+            subscription_id=2,
+            topic_id="same-topic",
+            topic_title="同一个帖子",
+            topic_url="https://www.cc98.org/topic/same-topic",
+            matched_reason="命中搜索表达式：大一",
+            delivery_status="pending",
+        )
+        db.add_all([first, second])
+        db.commit()
+
+        sent = watch._send_notification_batch(db, user_id, [first, second])
+
+        assert sent == 2
+        assert len(captured_items) == 1
+        assert len(captured_items[0]) == 1
+        db.refresh(first)
+        db.refresh(second)
+        assert first.delivery_status == "sent"
+        assert second.delivery_status == "sent"
     finally:
         db.close()
 

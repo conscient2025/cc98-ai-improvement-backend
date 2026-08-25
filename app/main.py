@@ -175,6 +175,27 @@ def _ensure_valid_subscription_expression(name: str, description: str) -> None:
         raise HTTPException(status_code=400, detail="订阅关键词至少需要包含一个 2 个字以上的有效词，例如：电脑、电影、微积分/微甲/vjf")
 
 
+def _ensure_no_duplicate_subscription(
+    db: Session,
+    current_user: models.User,
+    name: str,
+    description: str,
+    board_id: str | None,
+    *,
+    exclude_id: int | None = None,
+) -> None:
+    query = db.query(models.Subscription).filter(
+        models.Subscription.user_id == current_user.id,
+        models.Subscription.name == name,
+        models.Subscription.description == description,
+        models.Subscription.board_id == board_id,
+    )
+    if exclude_id is not None:
+        query = query.filter(models.Subscription.id != exclude_id)
+    if query.first() is not None:
+        raise HTTPException(status_code=400, detail="已经存在相同的订阅，请不要重复创建")
+
+
 def _legacy_notification_settings_out(db: Session, user_id: str) -> NotificationSettingOut:
     channel = (
         db.query(models.NotificationChannel)
@@ -275,6 +296,7 @@ def create_subscription(
     if not name:
         raise HTTPException(status_code=400, detail="订阅名称不能为空")
     _ensure_valid_subscription_expression(name, description)
+    _ensure_no_duplicate_subscription(db, current_user, name, description, payload.board_id)
     active_count = (
         db.query(models.Subscription)
         .filter(models.Subscription.user_id == current_user.id, models.Subscription.status == "enabled")
@@ -333,6 +355,7 @@ def update_subscription(
         subscription.board_id = payload.board_id
     if payload.status is not None:
         subscription.status = payload.status
+    _ensure_no_duplicate_subscription(db, current_user, subscription.name, subscription.description, subscription.board_id, exclude_id=subscription.id)
     subscription.updated_at = utc_now()
     db.commit()
     db.refresh(subscription)
