@@ -4,6 +4,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from .models import NotificationPreference
+
 
 def scan_interval_minutes() -> int:
     try:
@@ -24,10 +28,10 @@ def effective_notify_interval_minutes(config: dict[str, Any] | None, requested: 
     return max(scan_interval_minutes(), minutes)
 
 
-def with_effective_notify_interval(config: dict[str, Any] | None, requested: int | None = None) -> dict[str, Any]:
-    next_config = dict(config or {})
-    next_config["notify_interval_minutes"] = effective_notify_interval_minutes(next_config, requested)
-    return next_config
+def user_notify_interval_minutes(db: Session, user_id: str) -> int:
+    preference = db.get(NotificationPreference, user_id)
+    requested = preference.notify_interval_minutes if preference is not None else None
+    return effective_notify_interval_minutes({}, requested)
 
 
 def parse_datetime(value: datetime | str | None) -> datetime | None:

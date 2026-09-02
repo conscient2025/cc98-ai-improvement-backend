@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String, Text, UniqueConstraint
 
 from .database import Base
 
@@ -50,6 +50,9 @@ class Subscription(Base):
 
 class NotificationChannel(Base):
     __tablename__ = "notification_channels"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_notification_channel_user_provider"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String(64), index=True, nullable=False)
@@ -57,6 +60,7 @@ class NotificationChannel(Base):
     config_json = Column(Text, nullable=False)
     enabled = Column(Boolean, default=False, nullable=False)
     last_test_at = Column(DateTime(timezone=True), nullable=True)
+    last_attempted_at = Column(DateTime(timezone=True), nullable=True)
     last_sent_at = Column(DateTime(timezone=True), nullable=True)
     last_test_status = Column(String(64), nullable=True)
     last_error = Column(Text, nullable=True)
@@ -81,21 +85,37 @@ class CC98Topic(Base):
 class Notification(Base):
     __tablename__ = "notifications"
     __table_args__ = (
-        UniqueConstraint("user_id", "subscription_id", "topic_id", name="uq_notification_user_subscription_topic"),
+        UniqueConstraint("user_id", "topic_id", name="uq_notification_user_topic"),
+        Index("ix_notifications_user_id_id", "user_id", "id"),
+        Index("ix_notifications_user_dispatch_pending_id", "user_id", "dispatch_pending", "id"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String(64), index=True, nullable=False)
-    subscription_id = Column(Integer, index=True, nullable=False)
     topic_id = Column(String(128), index=True, nullable=False)
     topic_title = Column(String(500), nullable=False)
     topic_url = Column(Text, nullable=False)
     matched_reason = Column(Text, nullable=True)
-    delivery_channel = Column(String(32), nullable=True)
-    delivery_status = Column(String(32), default="pending", nullable=False)
-    sent_at = Column(DateTime(timezone=True), nullable=True)
+    dispatch_pending = Column(Boolean, default=False, nullable=False)
+    dispatch_processed_at = Column(DateTime(timezone=True), nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class NotificationPreference(Base):
+    __tablename__ = "notification_preferences"
+
+    user_id = Column(String(64), primary_key=True)
+    notify_interval_minutes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class NotificationReadState(Base):
+    __tablename__ = "notification_read_states"
+
+    user_id = Column(String(64), primary_key=True)
+    last_success_at = Column(DateTime(timezone=True), nullable=False)
 
 
 class SystemCursor(Base):

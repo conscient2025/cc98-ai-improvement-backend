@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+import logging
+import math
 import os
 from typing import Any
 
@@ -8,6 +10,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from . import models
 from .auth import request_email_code, token_payload, verify_email_code
@@ -15,7 +18,7 @@ from .cc98_client import cc98_client
 from .database import get_db, init_db
 from .env import load_dotenv
 from .matcher import has_valid_search_expression
-from .notification_frequency import effective_notify_interval_minutes, scan_interval_minutes, with_effective_notify_interval
+from .notification_frequency import effective_notify_interval_minutes, scan_interval_minutes, user_notify_interval_minutes
 from .notifiers import redact_config, send_notification
 from .schemas import (
     AdminHealthOut,
@@ -37,12 +40,13 @@ from .schemas import (
     UserOut,
 )
 from .tasks import start_scheduler, stop_scheduler
-from .utils import json_dumps, json_loads, normalize_topic_text, utc_now
+from .utils import as_utc, json_dumps, json_loads, normalize_topic_text, utc_now
 from .watch import run_watch_scan
 
 
 load_dotenv()
 init_db()
+logger = logging.getLogger(__name__)
 
 
 def _public_docs_enabled() -> bool:
@@ -96,9 +100,24 @@ def _subscription_out(subscription: models.Subscription) -> SubscriptionOut:
     )
 
 
-def _channel_out(channel: models.NotificationChannel) -> NotificationChannelOut:
-    raw_config = with_effective_notify_interval(json_loads(channel.config_json, {}))
+def _save_notify_interval(db: Session, user_id: str, requested: int | None) -> None:
+    interval = effective_notify_interval_minutes({}, requested)
+    preference = db.get(models.NotificationPreference, user_id)
+    if preference is None:
+        preference = models.NotificationPreference(user_id=user_id, notify_interval_minutes=interval)
+        db.add(preference)
+    else:
+        preference.notify_interval_minutes = interval
+        preference.updated_at = utc_now()
+
+
+def _channel_out(db: Session, channel: models.NotificationChannel) -> NotificationChannelOut:
+    raw_config = json_loads(channel.config_json, {})
     config, has_secret = redact_config(channel.provider, raw_config)
+    interval = user_notify_interval_minutes(db, channel.user_id)
+    # Keep the old nested value in responses while the frontend moves to the
+    # top-level user preference. It is no longer stored per channel.
+    config["notify_interval_minutes"] = interval
     return NotificationChannelOut(
         id=channel.id,
         user_id=channel.user_id,
@@ -106,8 +125,9 @@ def _channel_out(channel: models.NotificationChannel) -> NotificationChannelOut:
         enabled=channel.enabled,
         config=config,
         has_secret=has_secret,
-        notify_interval_minutes=effective_notify_interval_minutes(raw_config),
+        notify_interval_minutes=interval,
         last_test_at=channel.last_test_at,
+        last_attempted_at=channel.last_attempted_at,
         last_sent_at=channel.last_sent_at,
         last_test_status=channel.last_test_status,
         last_error=channel.last_error,
@@ -120,16 +140,18 @@ def _notification_out(notification: models.Notification) -> NotificationOut:
     return NotificationOut(
         id=notification.id,
         user_id=notification.user_id,
-        subscription_id=notification.subscription_id,
+        subscription_id=None,
         topic_id=notification.topic_id,
         topic_title=notification.topic_title,
         topic_url=notification.topic_url,
         topic=notification.topic_title,
         matched_reason=notification.matched_reason,
         summary=notification.matched_reason,
-        delivery_channel=notification.delivery_channel,
-        delivery_status=notification.delivery_status,
-        sent_at=notification.sent_at,
+        dispatch_pending=notification.dispatch_pending,
+        dispatch_processed_at=notification.dispatch_processed_at,
+        delivery_channel=None,
+        delivery_status="pending" if notification.dispatch_pending else "processed",
+        sent_at=notification.dispatch_processed_at,
         is_read=notification.is_read,
         created_at=notification.created_at,
     )
@@ -203,14 +225,14 @@ def _legacy_notification_settings_out(db: Session, user_id: str) -> Notification
         .first()
     )
     if channel is None:
-        return NotificationSettingOut(user_id=user_id, dingtalk_enabled=False, notify_interval_minutes=effective_notify_interval_minutes({}))
+        return NotificationSettingOut(user_id=user_id, dingtalk_enabled=False, notify_interval_minutes=user_notify_interval_minutes(db, user_id))
     config = json_loads(channel.config_json, {})
     return NotificationSettingOut(
         user_id=user_id,
         dingtalk_enabled=channel.enabled,
         dingtalk_webhook=config.get("webhook"),
         has_dingtalk_secret=bool(config.get("secret")),
-        notify_interval_minutes=effective_notify_interval_minutes(config),
+        notify_interval_minutes=user_notify_interval_minutes(db, user_id),
         created_at=channel.created_at,
         updated_at=channel.updated_at,
     )
@@ -218,13 +240,20 @@ def _legacy_notification_settings_out(db: Session, user_id: str) -> Notification
 
 def _get_or_create_channel(db: Session, payload: NotificationChannelSave, user_id: str | None = None) -> models.NotificationChannel:
     target_user_id = user_id or payload.user_id
+    requested_interval = payload.notify_interval_minutes
+    if requested_interval is None and payload.config.get("notify_interval_minutes") is not None:
+        requested_interval = int(payload.config["notify_interval_minutes"])
+    preference = db.get(models.NotificationPreference, target_user_id)
+    if requested_interval is not None or preference is None:
+        _save_notify_interval(db, target_user_id, requested_interval)
     channel = (
         db.query(models.NotificationChannel)
         .filter(models.NotificationChannel.user_id == target_user_id, models.NotificationChannel.provider == payload.provider)
         .first()
     )
     if channel is None:
-        config = with_effective_notify_interval(payload.config, payload.notify_interval_minutes)
+        config = dict(payload.config)
+        config.pop("notify_interval_minutes", None)
         channel = models.NotificationChannel(
             user_id=target_user_id,
             provider=payload.provider,
@@ -238,9 +267,7 @@ def _get_or_create_channel(db: Session, payload: NotificationChannelSave, user_i
         for secret_key in ("secret", "token", "password", "smtp_password"):
             if new_config.get(secret_key) == "***" and old_config.get(secret_key):
                 new_config[secret_key] = old_config[secret_key]
-        if payload.notify_interval_minutes is None and "notify_interval_minutes" not in new_config:
-            new_config["notify_interval_minutes"] = old_config.get("notify_interval_minutes")
-        new_config = with_effective_notify_interval(new_config, payload.notify_interval_minutes)
+        new_config.pop("notify_interval_minutes", None)
         channel.config_json = json_dumps(new_config)
         channel.enabled = payload.enabled
         channel.updated_at = utc_now()
@@ -386,7 +413,7 @@ def list_channels(
 ) -> list[NotificationChannelOut]:
     _ = user_id
     rows = db.query(models.NotificationChannel).filter(models.NotificationChannel.user_id == current_user.id).all()
-    return [_channel_out(row) for row in rows]
+    return [_channel_out(db, row) for row in rows]
 
 
 @app.put("/api/v1/notification-channels", response_model=NotificationChannelOut)
@@ -395,7 +422,7 @@ def save_channel(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(_require_current_user),
 ) -> NotificationChannelOut:
-    return _channel_out(_get_or_create_channel(db, payload, current_user.id))
+    return _channel_out(db, _get_or_create_channel(db, payload, current_user.id))
 
 
 @app.post("/api/v1/notification-channels/test")
@@ -467,6 +494,41 @@ def test_legacy_notification_settings(
     return {"status": "ok"}
 
 
+def _record_notification_list_success(db: Session, user_id: str) -> None:
+    limit_seconds = max(0, int(os.getenv("NOTIFICATION_READ_RATE_LIMIT_SECONDS", "60")))
+    if limit_seconds == 0:
+        return
+    now = utc_now()
+    state = db.get(models.NotificationReadState, user_id)
+    if state is None:
+        try:
+            with db.begin_nested():
+                state = models.NotificationReadState(user_id=user_id, last_success_at=now)
+                db.add(state)
+                db.flush()
+            db.commit()
+            return
+        except IntegrityError:
+            state = db.get(models.NotificationReadState, user_id)
+
+    last_success_at = as_utc(state.last_success_at) if state is not None else None
+    if last_success_at is not None:
+        elapsed = max(0.0, (now - last_success_at).total_seconds())
+        if elapsed < limit_seconds:
+            retry_after = max(1, math.ceil(limit_seconds - elapsed))
+            logger.info("notification list rate limited user_id=%s retry_after=%d", user_id, retry_after)
+            raise HTTPException(
+                status_code=429,
+                detail=f"通知列表每 {limit_seconds} 秒最多刷新一次",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    if state is None:
+        raise RuntimeError("notification read rate-limit state could not be created")
+    state.last_success_at = now
+    db.commit()
+
+
 @app.get("/api/v1/notifications", response_model=list[NotificationOut])
 @app.get("/api/notifications", response_model=list[NotificationOut])
 def list_notifications(
@@ -475,6 +537,7 @@ def list_notifications(
     current_user: models.User = Depends(_require_current_user),
 ) -> list[NotificationOut]:
     _ = user_id
+    _record_notification_list_success(db, current_user.id)
     rows = (
         db.query(models.Notification)
         .filter(models.Notification.user_id == current_user.id)
@@ -482,6 +545,7 @@ def list_notifications(
         .limit(100)
         .all()
     )
+    logger.info("notification list read user_id=%s count=%d", current_user.id, len(rows))
     return [_notification_out(row) for row in rows]
 
 

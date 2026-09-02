@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import threading
 import time
 from datetime import datetime
@@ -12,6 +13,7 @@ import httpx
 from .cc98_auth import service_auth
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+logger = logging.getLogger(__name__)
 
 
 def _cc98_trust_env() -> bool:
@@ -33,8 +35,12 @@ class CC98ServiceClient:
         self.timeout = float(os.getenv("CC98_TIMEOUT", "10"))
         self.search_min_interval = float(os.getenv("CC98_SEARCH_MIN_INTERVAL_SECONDS", "1.2"))
         self.search_retry_attempts = int(os.getenv("CC98_SEARCH_RETRY_ATTEMPTS", "2"))
+        self.new_posts_min_interval = float(os.getenv("CC98_NEW_POSTS_MIN_INTERVAL_SECONDS", "2"))
+        self.new_posts_retry_attempts = int(os.getenv("CC98_NEW_POSTS_RETRY_ATTEMPTS", "2"))
         self._search_lock = threading.Lock()
         self._last_search_at = 0.0
+        self._new_posts_lock = threading.Lock()
+        self._last_new_posts_at = 0.0
         self.last_success_at: datetime | None = None
         self.last_error: str | None = None
 
@@ -90,10 +96,11 @@ class CC98ServiceClient:
         return [normalize_topic(item) for item in payload if isinstance(item, dict)]
 
     def get_new_posts(self, *, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
-        payload = self._get_json("/topic/new", params={"from": offset, "size": limit})
+        payload = self._get_new_posts_json(params={"from": offset, "size": limit})
         if not isinstance(payload, list):
             return []
-        return [normalize_topic(item) for item in payload if isinstance(item, dict)]
+        topics = [normalize_topic(item) for item in payload if isinstance(item, dict)]
+        return [topic for topic in topics if topic["topic_id"]]
 
     def _get_json(self, path: str, *, params: dict[str, Any] | None = None, retry_auth: bool = True) -> Any:
         headers = service_auth.auth_header()
@@ -104,7 +111,7 @@ class CC98ServiceClient:
             timeout=self.timeout,
             trust_env=_cc98_trust_env(),
         )
-        if response.status_code in {401, 403} and retry_auth:
+        if response.status_code == 401 and retry_auth:
             service_auth.mark_auth_failed()
             headers = service_auth.auth_header()
             response = httpx.get(
@@ -135,6 +142,31 @@ class CC98ServiceClient:
                 time.sleep(max(self.search_min_interval, 1.0))
         return []
 
+    def _get_new_posts_json(self, *, params: dict[str, Any]) -> Any:
+        offset = int(params.get("from") or 0)
+        for attempt in range(self.new_posts_retry_attempts + 1):
+            self._wait_new_posts_slot()
+            try:
+                return self._get_json("/topic/new", params=params)
+            except CC98APIError as exc:
+                if exc.status_code != 403 or attempt >= self.new_posts_retry_attempts:
+                    logger.warning(
+                        "CC98 new-post request failed offset=%d status=%d retry=%d",
+                        offset,
+                        exc.status_code,
+                        attempt,
+                    )
+                    raise
+                delay = max(self.new_posts_min_interval, 0.1) * (2**attempt)
+                logger.warning(
+                    "CC98 new-post request rate-limited offset=%d status=403 retry=%d delay_seconds=%.1f",
+                    offset,
+                    attempt + 1,
+                    delay,
+                )
+                time.sleep(delay)
+        return []
+
     def _wait_search_slot(self) -> None:
         if self.search_min_interval <= 0:
             return
@@ -145,6 +177,16 @@ class CC98ServiceClient:
                 time.sleep(delay)
             self._last_search_at = time.monotonic()
 
+    def _wait_new_posts_slot(self) -> None:
+        if self.new_posts_min_interval <= 0:
+            return
+        with self._new_posts_lock:
+            elapsed = time.monotonic() - self._last_new_posts_at
+            delay = self.new_posts_min_interval - elapsed
+            if delay > 0:
+                time.sleep(delay)
+            self._last_new_posts_at = time.monotonic()
+
     def _url(self, path: str) -> str:
         return urljoin(self.base_url, path.lstrip("/"))
 
@@ -153,7 +195,7 @@ def normalize_topic(item: dict[str, Any]) -> dict[str, Any]:
     topic_id = item.get("id") or item.get("topicId")
     board_id = item.get("boardId") or item.get("board_id")
     return {
-        "topic_id": str(topic_id),
+        "topic_id": str(topic_id) if topic_id is not None else "",
         "title": str(item.get("title") or f"CC98 topic {topic_id}"),
         "url": item.get("url") or f"https://www.cc98.org/topic/{topic_id}",
         "board_id": str(board_id) if board_id is not None else None,
