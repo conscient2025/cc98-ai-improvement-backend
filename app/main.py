@@ -45,6 +45,20 @@ from .watch import run_watch_scan
 
 
 load_dotenv()
+
+
+def _configure_app_logging() -> None:
+    level = getattr(logging, os.getenv("APP_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(level)
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        app_logger.addHandler(handler)
+    app_logger.propagate = False
+
+
+_configure_app_logging()
 init_db()
 logger = logging.getLogger(__name__)
 
