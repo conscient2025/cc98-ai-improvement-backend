@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -264,7 +265,7 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
 
     from app import watch
     from app.database import SessionLocal
-    from app.models import Notification, NotificationChannel, utc_now
+    from app.models import Notification, NotificationPreference, utc_now
 
     calls: list[object] = []
 
@@ -276,8 +277,9 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
 
     db = SessionLocal()
     try:
-        channel = db.query(NotificationChannel).filter(NotificationChannel.user_id == user_id).one()
-        channel.last_attempted_at = utc_now()
+        preference = db.get(NotificationPreference, user_id)
+        assert preference is not None
+        preference.last_dispatch_started_at = utc_now()
         notification = Notification(
             user_id=user_id,
             topic_id="interval-topic-1",
@@ -296,6 +298,63 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
         assert result["processed_notifications"] == 0
         assert calls == []
         assert notification.dispatch_pending is True
+    finally:
+        db.close()
+
+
+def test_user_dispatch_cycle_ignores_channel_delay_and_allows_scheduler_grace(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    headers, user_id = _login(client)
+    assert client.put(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={
+            "provider": "dingtalk",
+            "enabled": True,
+            "notify_interval_minutes": 10,
+            "config": {"webhook": "https://example.com/webhook", "secret": ""},
+        },
+    ).status_code == 200
+
+    from app import watch
+    from app.database import SessionLocal
+    from app.models import Notification, NotificationChannel, NotificationPreference
+
+    now = datetime(2026, 9, 3, 3, 43, 4, tzinfo=timezone.utc)
+    monkeypatch.setattr(watch, "utc_now", lambda: now)
+    monkeypatch.setenv("NOTIFICATION_DUE_GRACE_SECONDS", "5")
+    calls: list[object] = []
+    monkeypatch.setattr(
+        watch,
+        "send_batch_notification",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or SendResult(ok=True, status="sent"),
+    )
+
+    db = SessionLocal()
+    try:
+        preference = db.get(NotificationPreference, user_id)
+        assert preference is not None
+        preference.last_dispatch_started_at = now - timedelta(minutes=10) + timedelta(seconds=2)
+        channel = db.query(NotificationChannel).filter(NotificationChannel.user_id == user_id).one()
+        channel.last_attempted_at = now - timedelta(minutes=9, seconds=50)
+        notification = Notification(
+            user_id=user_id,
+            topic_id="scheduler-boundary",
+            topic_title="scheduler boundary",
+            topic_url="https://www.cc98.org/topic/scheduler-boundary",
+            dispatch_pending=True,
+        )
+        db.add(notification)
+        db.commit()
+
+        result = watch._send_notification_batch(db, user_id, [notification])
+
+        db.refresh(preference)
+        db.refresh(notification)
+        assert result["dispatch_successes"] == 1
+        assert len(calls) == 1
+        assert preference.last_dispatch_started_at == now.replace(tzinfo=None)
+        assert notification.dispatch_pending is False
     finally:
         db.close()
 
@@ -839,3 +898,33 @@ def test_legacy_sqlite_notifications_are_deduplicated_and_retired(tmp_path: Path
     assert rows[0].matched_reason == "first reason"
     assert rows[0].dispatch_pending == 0
     assert rows[0].dispatch_processed_at is not None
+
+
+def test_legacy_notification_preferences_gain_user_dispatch_timestamp(tmp_path: Path, monkeypatch) -> None:
+    from sqlalchemy import create_engine, inspect, text
+
+    from app import database
+
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'legacy-preferences.db'}")
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE notification_preferences ("
+                "user_id VARCHAR(64) NOT NULL PRIMARY KEY, "
+                "notify_interval_minutes INTEGER NOT NULL, "
+                "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notification_preferences "
+                "(user_id, notify_interval_minutes, created_at, updated_at) "
+                "VALUES ('user-1', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database.init_db()
+
+    columns = {column["name"] for column in inspect(migration_engine).get_columns("notification_preferences")}
+    assert "last_dispatch_started_at" in columns

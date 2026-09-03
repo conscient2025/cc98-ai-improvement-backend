@@ -107,6 +107,7 @@ class NotificationPreference(Base):
 
     user_id = Column(String(64), primary_key=True)
     notify_interval_minutes = Column(Integer, nullable=False)
+    last_dispatch_started_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 

@@ -134,6 +134,7 @@ UNIQUE(user_id, provider)
 
 ~~~text
 notify_interval_minutes
+last_dispatch_started_at
 ~~~
 
 推荐作为用户通知偏好字段保存。所有启用渠道在同一提醒周期内一起处理。
@@ -147,6 +148,8 @@ effective_interval = max(SCAN_INTERVAL_MINUTES, user_notify_interval_minutes)
 ~~~
 
 服务器当前扫描间隔为 10 分钟，因此当前最短有效提醒频率也是 10 分钟。
+
+频率判断只读取用户级 `last_dispatch_started_at`。它在一轮用户投递开始、外部渠道调用之前更新一次；邮箱和钉钉各自的 `last_attempted_at` 仅用于渠道诊断，不能参与用户频率判断，否则串行发送耗时会把下一轮从 10 分钟误推迟到 20 分钟。判断时允许 `NOTIFICATION_DUE_GRACE_SECONDS`（默认 5 秒）的调度抖动。
 
 ## 4. 新帖接口与扫描游标
 
@@ -368,6 +371,14 @@ ORDER BY id ASC;
 ~~~
 
 正常情况下，一条待处理通知最多等待约一个用户提醒周期，再加少量定时任务抖动。因此最低提醒频率决定的是健康队列的最长常规停留时间，而不是历史数据在数据库中的保留时间。
+
+到期判断使用用户级投递轮次开始时间：
+
+~~~text
+now + due_grace >= last_dispatch_started_at + notify_interval
+~~~
+
+开始处理一个用户时只更新一次 `last_dispatch_started_at`，之后邮件、钉钉以及多个批次各自更新渠道时间，但不会改变本轮的用户级频率起点。
 
 ### 6.3 先出队，再发送
 

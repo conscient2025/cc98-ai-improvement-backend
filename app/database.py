@@ -119,12 +119,19 @@ def _migrate_sqlite_notifications() -> None:
 
 
 def _migrate_notification_preferences() -> None:
-    """Seed the user-level interval from existing channel configs once."""
+    """Migrate user-level dispatch timing and seed preferences from channels."""
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
     if "notification_preferences" not in table_names or "notification_channels" not in table_names:
         return
+    preference_columns = {column["name"] for column in inspector.get_columns("notification_preferences")}
+    needs_dispatch_backfill = "last_dispatch_started_at" not in preference_columns
+    column_type = "DATETIME" if engine.dialect.name == "sqlite" else "TIMESTAMP WITH TIME ZONE"
     with engine.begin() as connection:
+        if needs_dispatch_backfill:
+            connection.execute(
+                text(f"ALTER TABLE notification_preferences ADD COLUMN last_dispatch_started_at {column_type}")
+            )
         existing_users = {
             str(row[0])
             for row in connection.execute(text("SELECT user_id FROM notification_preferences"))
@@ -152,6 +159,15 @@ def _migrate_notification_preferences() -> None:
                 {"user_id": user_id, "interval": interval},
             )
             existing_users.add(user_id)
+        if needs_dispatch_backfill:
+            connection.execute(
+                text(
+                    "UPDATE notification_preferences SET last_dispatch_started_at = ("
+                    "SELECT MAX(notification_channels.last_attempted_at) FROM notification_channels "
+                    "WHERE notification_channels.user_id = notification_preferences.user_id"
+                    ") WHERE last_dispatch_started_at IS NULL"
+                )
+            )
 
 
 def get_db() -> Generator[Session, None, None]:

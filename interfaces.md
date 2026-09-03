@@ -115,6 +115,7 @@ SMTP_FROM=你的网易邮箱
 
 - 扫描频率由后端 `.env` 的 `SCAN_INTERVAL_MINUTES` 固定控制。
 - `notify_interval_minutes` 是用户级统一频率；从任一渠道保存时更新，所有启用渠道在同一轮尝试。
+- 频率基于用户级 `last_dispatch_started_at` 判断；渠道的 `last_attempted_at` 只记录实际调用时间，不参与下一轮调度。默认允许 `NOTIFICATION_DUE_GRACE_SECONDS=5` 的调度抖动。
 - 后端会自动保证 `notify_interval_minutes >= SCAN_INTERVAL_MINUTES`。例如扫描每 10 分钟一次，用户传 1 分钟，实际返回和保存都是 10 分钟；用户传 60 分钟，则每小时聚合推送一次。
 - 有启用渠道时，新通知以 `dispatch_pending=true` 进入一次性提醒队列；没有渠道时只进入前端历史，不会在以后启用渠道时补发。
 - 到提醒时间后先提交 `dispatch_pending=false`，再对邮箱和钉钉各尝试一次。失败只写入渠道最近错误，不会跨轮自动重试。

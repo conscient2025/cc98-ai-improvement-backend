@@ -17,6 +17,7 @@ from .models import (
     CC98Topic,
     Notification,
     NotificationChannel,
+    NotificationPreference,
     Subscription,
     SystemCursor,
     WorkerStatus,
@@ -270,13 +271,25 @@ def _pending_notifications(db: Session, user_id: str) -> list[Notification]:
     )
 
 
-def _is_user_due(db: Session, user_id: str, channels: list[NotificationChannel], now: datetime) -> bool:
-    attempted = [parse_datetime(channel.last_attempted_at) for channel in channels]
-    last_attempted_at = max((value for value in attempted if value is not None), default=None)
-    if last_attempted_at is None:
+def _is_user_due(db: Session, user_id: str, now: datetime) -> bool:
+    preference = db.get(NotificationPreference, user_id)
+    last_started_at = parse_datetime(preference.last_dispatch_started_at) if preference is not None else None
+    if last_started_at is None:
         return True
     interval = timedelta(minutes=user_notify_interval_minutes(db, user_id))
-    return now - last_attempted_at >= interval
+    grace_seconds = max(0, min(60, int(os.getenv("NOTIFICATION_DUE_GRACE_SECONDS", "5"))))
+    return now - last_started_at + timedelta(seconds=grace_seconds) >= interval
+
+
+def _start_user_dispatch(db: Session, user_id: str, started_at: datetime) -> None:
+    preference = db.get(NotificationPreference, user_id)
+    if preference is None:
+        preference = NotificationPreference(
+            user_id=user_id,
+            notify_interval_minutes=user_notify_interval_minutes(db, user_id),
+        )
+        db.add(preference)
+    preference.last_dispatch_started_at = started_at
 
 
 def _channel_destination_key(channel: NotificationChannel, config: dict[str, Any]) -> tuple[str, str]:
@@ -321,7 +334,7 @@ def _send_notification_batch(
 
     channels = _enabled_channels(db, user_id)
     now = utc_now()
-    if channels and not _is_user_due(db, user_id, channels, now):
+    if channels and not _is_user_due(db, user_id, now):
         logger.info(
             "notification dispatch deferred user_id=%s pending=%d interval_minutes=%d",
             user_id,
@@ -331,6 +344,14 @@ def _send_notification_batch(
         return metrics
 
     # At-most-once: the queue transition is committed before any external call.
+    if channels:
+        _start_user_dispatch(db, user_id, now)
+        logger.info(
+            "notification dispatch cycle started user_id=%s pending=%d interval_minutes=%d",
+            user_id,
+            len(notifications),
+            user_notify_interval_minutes(db, user_id),
+        )
     for notification in notifications:
         notification.dispatch_pending = False
         notification.dispatch_processed_at = now
