@@ -44,7 +44,7 @@ AUTH_EMAIL_DELIVERY=false
 Authorization: Bearer <access_token>
 ```
 
-后端会从 token 里识别当前用户，不再信任请求体或查询参数里的 `user_id`。为了兼容旧前端，接口里暂时还保留 `user_id` 字段，但它不会决定实际操作哪个用户。
+后端会从 token 里识别当前用户，用户接口不接受请求体或查询参数里的 `user_id`。
 
 手动扫描和管理健康检查属于后台接口，需要单独的管理员密钥：
 
@@ -64,7 +64,9 @@ CC98_SERVICE_PASSWORD=
 CC98_TRUST_ENV=false
 ```
 
-后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取 CC98 全站新帖列表，再和订阅关键词/说明做匹配。
+后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取 CC98 全站新帖列表，再和用户订阅表达式做匹配。
+
+订阅表达式只使用两种运算符：空白表示 AND，半角 `/` 表示同义词 OR；其他字符均按字面量保留。每个关键词至少 2 个字符，表达式规范化后最多 255 个字符。每个用户最多存在 10 条订阅，暂停的订阅也计数，只有删除才释放名额。
 
 `CC98_TRUST_ENV=false` 表示访问 CC98 时不读取本机 `HTTP_PROXY` / `HTTPS_PROXY` 等系统代理环境变量。开发机开了 Clash、代理但 CC98 直连可用时，建议保持 `false`，否则可能出现 TLS 握手超时。如果部署环境必须通过代理访问 CC98，再改成 `true`。
 
@@ -122,18 +124,7 @@ python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 - 组长/部署同学：`docs/deployment-handoff.md`
 - 接口总览：`interfaces.md`
 
-为了兼容之前仓库里的前端，也保留了旧接口：
-
-```text
-POST   /api/subscribe
-GET    /api/subscriptions
-DELETE /api/subscribe/{id}
-GET    /api/notifications
-GET    /api/notification-settings
-PUT    /api/notification-settings
-POST   /api/notification-settings/test
-POST   /api/tasks/scan
-```
+旧插件接口不再兼容；订阅、通知、渠道和扫描统一使用 `/api/v1/*`。当前请求与响应格式见 `interfaces.md`。
 
 ## 安全边界
 

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 SubscriptionStatus = Literal["enabled", "paused"]
-NotificationProvider = Literal["dingtalk", "feishu", "email"]
+NotificationProvider = Literal["dingtalk", "email"]
 
 
 class HealthResponse(BaseModel):
@@ -45,79 +45,47 @@ class AuthTokenOut(BaseModel):
 
 
 class SubscriptionCreate(BaseModel):
-    user_id: str = "demo_user"
-    name: str | None = None
-    description: str | None = None
-    topic: str | None = None
-    board_id: str | None = None
+    expression: str
 
 
 class SubscriptionUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    expression: str | None = None
     status: SubscriptionStatus | None = None
-    board_id: str | None = None
 
 
 class SubscriptionOut(BaseModel):
     id: int
-    user_id: str
-    name: str
-    description: str
-    topic: str
-    board_id: str | None = None
+    expression: str
     status: str
-    active: bool
     created_at: datetime
     updated_at: datetime
 
 
 class NotificationChannelSave(BaseModel):
-    user_id: str = "demo_user"
-    provider: NotificationProvider = "dingtalk"
+    provider: NotificationProvider
     enabled: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
     notify_interval_minutes: int | None = Field(default=None, ge=1)
 
 
-class NotificationSettingSave(BaseModel):
-    user_id: str = "demo_user"
-    dingtalk_enabled: bool = False
-    dingtalk_webhook: str | None = None
-    dingtalk_secret: str | None = None
-    notify_interval_minutes: int | None = Field(default=None, ge=1)
+class NotificationChannelTest(BaseModel):
+    provider: NotificationProvider
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class NotificationChannelOut(BaseModel):
-    id: int | None = None
-    user_id: str
+    id: int
     provider: str
     enabled: bool
     config: dict[str, Any]
     has_secret: bool = False
     notify_interval_minutes: int
-    last_test_at: datetime | None = None
     last_attempted_at: datetime | None = None
     last_sent_at: datetime | None = None
-    last_test_status: str | None = None
-    last_error: str | None = None
+    last_dispatch_status: str | None = None
+    last_dispatch_error: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
-
-
-class NotificationSettingOut(BaseModel):
-    user_id: str
-    dingtalk_enabled: bool
-    dingtalk_webhook: str | None = None
-    has_dingtalk_secret: bool = False
-    notify_interval_minutes: int
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class NotificationSettingTest(BaseModel):
-    user_id: str = "demo_user"
-    message: str = "CC98 AI Watch notification test"
 
 
 class CC98TopicOut(BaseModel):
@@ -133,22 +101,10 @@ class CC98TopicOut(BaseModel):
 
 class NotificationOut(BaseModel):
     id: int
-    user_id: str
-    subscription_id: int | None = None
     topic_id: str
     topic_title: str
     topic_url: str
-    topic: str
     matched_reason: str | None = None
-    summary: str | None = None
-    dispatch_pending: bool
-    dispatch_processed_at: datetime | None = None
-    # Deprecated compatibility fields; delivery is now tracked only as a
-    # one-shot queue transition and channel-level health.
-    delivery_channel: str | None = None
-    delivery_status: str | None = None
-    sent_at: datetime | None = None
-    is_read: bool
     created_at: datetime
 
 

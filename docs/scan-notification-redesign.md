@@ -80,7 +80,6 @@ topic_url
 matched_reason
 dispatch_pending
 dispatch_processed_at
-is_read
 created_at
 
 UNIQUE(user_id, topic_id)
@@ -95,6 +94,7 @@ subscription_id
 delivery_channel
 delivery_status
 sent_at
+is_read
 ~~~
 
 设计含义：
@@ -112,8 +112,8 @@ sent_at
 ~~~text
 last_attempted_at
 last_sent_at
-last_test_status
-last_error
+last_dispatch_status
+last_dispatch_error
 
 UNIQUE(user_id, provider)
 ~~~
@@ -122,8 +122,8 @@ UNIQUE(user_id, provider)
 
 - last_attempted_at：最近一次实际尝试外部发送的时间；
 - last_sent_at：最近一次外部发送成功的时间；
-- last_test_status：渠道最近一次结果，例如 sent 或 failed；
-- last_error：供管理端和前端展示的最近错误；
+- last_dispatch_status：渠道最近一次正式投递结果，例如 sent 或 failed；
+- last_dispatch_error：供管理端和前端展示的最近正式投递错误；
 - (user_id, provider) 唯一约束确保每个用户最多一个邮箱渠道和一个钉钉渠道。
 
 渠道失败只是渠道最近一次运行结果，不再把对应通知重新放回队列。
@@ -389,7 +389,7 @@ now + due_grace >= last_dispatch_started_at + notify_interval
 3. 将这些通知设为 dispatch_pending = false，写入 dispatch_processed_at 并提交；
 4. 尝试发送邮箱；
 5. 尝试发送钉钉；
-6. 分别更新渠道级 last_attempted_at / last_sent_at / last_test_status / last_error；
+6. 分别更新渠道级 last_attempted_at / last_sent_at / last_dispatch_status / last_dispatch_error；
 7. 无论发送成功、失败或进程后续异常，都不重新入队。
 
 先出队的理由：
@@ -407,8 +407,8 @@ now + due_grace >= last_dispatch_started_at + notify_interval
 需要保留的是渠道最近一次结果，而不是每条通知的失败状态：
 
 ~~~text
-NotificationChannel.last_test_status = failed
-NotificationChannel.last_error = 用户可理解的错误摘要
+NotificationChannel.last_dispatch_status = failed
+NotificationChannel.last_dispatch_error = 用户可理解的错误摘要
 ~~~
 
 前端可以提示：
@@ -494,7 +494,7 @@ chrome.alarms.clear("badge-poll")
 - 用户不打开通知列表时，不再向服务器请求；
 - 没有配置邮箱或钉钉的用户，只能在主动打开列表后发现新通知；
 - 不再保证后台实时未读徽章；
-- 如保留徽章，只在用户主动刷新列表后更新。
+- 徽章使用前端本机保存的 lastSeenNotificationId，只在用户主动打开插件或刷新列表后更新；后端不保存 is_read。
 
 ### 8.2 主动查看和手动刷新
 
@@ -516,7 +516,7 @@ chrome.alarms.clear("badge-poll")
 - lastSuccessAt：向用户展示“最后更新于……”；
 - 最近一次成功响应的通知缓存。
 
-手动刷新只读取后端已经生成的通知，绝不能触发 /tasks/scan 或直接调用 CC98 新帖接口。
+手动刷新只读取后端已经生成的通知，绝不能触发 /api/v1/tasks/scan 或直接调用 CC98 新帖接口。
 
 认证失败时应清除无效令牌、停止后台动作并引导重新登录，不能继续每隔固定时间产生 401。
 

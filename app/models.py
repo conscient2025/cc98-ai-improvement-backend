@@ -37,12 +37,13 @@ class EmailVerificationCode(Base):
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "expression", name="uq_subscription_user_expression"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String(64), index=True, nullable=False)
-    name = Column(String(255), nullable=False)
-    description = Column(Text, nullable=False)
-    board_id = Column(String(128), nullable=True)
+    expression = Column(String(255), nullable=False)
     status = Column(String(32), default="enabled", nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
@@ -59,11 +60,10 @@ class NotificationChannel(Base):
     provider = Column(String(32), nullable=False)
     config_json = Column(Text, nullable=False)
     enabled = Column(Boolean, default=False, nullable=False)
-    last_test_at = Column(DateTime(timezone=True), nullable=True)
     last_attempted_at = Column(DateTime(timezone=True), nullable=True)
     last_sent_at = Column(DateTime(timezone=True), nullable=True)
-    last_test_status = Column(String(64), nullable=True)
-    last_error = Column(Text, nullable=True)
+    last_dispatch_status = Column(String(64), nullable=True)
+    last_dispatch_error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -98,7 +98,6 @@ class Notification(Base):
     matched_reason = Column(Text, nullable=True)
     dispatch_pending = Column(Boolean, default=False, nullable=False)
     dispatch_processed_at = Column(DateTime(timezone=True), nullable=True)
-    is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
@@ -112,8 +111,8 @@ class NotificationPreference(Base):
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
-class NotificationReadState(Base):
-    __tablename__ = "notification_read_states"
+class NotificationListRateLimitState(Base):
+    __tablename__ = "notification_list_rate_limit_states"
 
     user_id = Column(String(64), primary_key=True)
     last_success_at = Column(DateTime(timezone=True), nullable=False)

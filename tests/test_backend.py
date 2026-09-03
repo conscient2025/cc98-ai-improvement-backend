@@ -49,9 +49,11 @@ def _login(client: TestClient, email: str = "student@zju.edu.cn") -> tuple[dict[
 
 def test_health(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    response = client.get("/api/health")
+    response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["components"]["subscription_limit"] == 10
+    assert response.json()["components"]["subscription_expression_max_length"] == 255
 
 
 def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
@@ -59,32 +61,33 @@ def test_auth_subscription_scan_notifications(tmp_path: Path) -> None:
     headers, user_id = _login(client)
 
     sub_response = client.post(
-        "/api/subscribe",
+        "/api/v1/subscriptions",
         headers=headers,
-        json={"user_id": "demo_user", "topic": "CC98 AI", "description": "search and watch notification"},
+        json={"expression": "CC98 AI"},
     )
     assert sub_response.status_code == 200
     subscription = sub_response.json()
-    assert subscription["active"] is True
-    assert subscription["topic"] == "CC98 AI"
-    assert subscription["user_id"] == user_id
+    assert subscription["status"] == "enabled"
+    assert subscription["expression"] == "CC98 AI"
+    assert "user_id" not in subscription
 
-    scan_response = client.post("/api/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+    scan_response = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
     assert scan_response.status_code == 200
     scan = scan_response.json()
     assert scan["scanned_subscriptions"] == 1
     assert scan["created_notifications"] >= 1
 
-    second_scan_response = client.post("/api/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+    second_scan_response = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
     assert second_scan_response.status_code == 200
     assert second_scan_response.json()["created_notifications"] == 0
 
-    notifications_response = client.get("/api/notifications", headers=headers)
+    notifications_response = client.get("/api/v1/notifications", headers=headers)
     assert notifications_response.status_code == 200
     notifications = notifications_response.json()
     assert notifications
-    assert notifications[0]["dispatch_pending"] is False
-    assert notifications[0]["delivery_status"] == "processed"
+    assert "dispatch_pending" not in notifications[0]
+    assert "delivery_status" not in notifications[0]
+    assert "is_read" not in notifications[0]
 
 
 def test_subscription_limit(tmp_path: Path) -> None:
@@ -92,17 +95,19 @@ def test_subscription_limit(tmp_path: Path) -> None:
     os.environ["SUBSCRIPTION_LIMIT"] = "1"
     headers, _user_id = _login(client)
 
-    first = client.post("/api/v1/subscriptions", headers=headers, json={"user_id": "u1", "name": "backend", "description": "FastAPI"})
+    first = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "backend"})
     assert first.status_code == 200
+    assert client.patch(f"/api/v1/subscriptions/{first.json()['id']}", headers=headers, json={"status": "paused"}).status_code == 200
 
-    second = client.post("/api/v1/subscriptions", headers=headers, json={"user_id": "u1", "name": "AI", "description": "LLM"})
+    second = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "LLM"})
     assert second.status_code == 400
+    assert "暂停的订阅也会计入" in second.json()["detail"]
 
 
 def test_duplicate_subscription_is_rejected(tmp_path: Path) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)
-    payload = {"name": "大一/求助/军训", "description": ""}
+    payload = {"expression": "大一/求助/军训"}
 
     first = client.post("/api/v1/subscriptions", headers=headers, json=payload)
     second = client.post("/api/v1/subscriptions", headers=headers, json=payload)
@@ -124,23 +129,49 @@ def test_subscription_rejects_too_short_keywords(tmp_path: Path) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)
 
-    response = client.post("/api/v1/subscriptions", headers=headers, json={"name": "了", "description": "的"})
+    response = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "了"})
 
     assert response.status_code == 400
-    assert "2 个字以上" in response.json()["detail"]
+    assert "至少需要 2 个字符" in response.json()["detail"]
 
 
 def test_subscription_update_rejects_too_short_keywords(tmp_path: Path) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)
 
-    created = client.post("/api/v1/subscriptions", headers=headers, json={"name": "电脑", "description": ""})
+    created = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "电脑"})
     assert created.status_code == 200
 
-    response = client.patch(f"/api/v1/subscriptions/{created.json()['id']}", headers=headers, json={"name": "的", "description": "了"})
+    response = client.patch(f"/api/v1/subscriptions/{created.json()['id']}", headers=headers, json={"expression": "的"})
 
     assert response.status_code == 400
-    assert "2 个字以上" in response.json()["detail"]
+    assert "至少需要 2 个字符" in response.json()["detail"]
+
+
+def test_subscription_rejects_invalid_slashes_and_long_expressions(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+
+    for expression in ("/实习", "实习/", "实习//校招"):
+        response = client.post("/api/v1/subscriptions", headers=headers, json={"expression": expression})
+        assert response.status_code == 400
+        assert "斜杠两侧" in response.json()["detail"]
+
+    full_width = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "实习／校招"})
+    assert full_width.status_code == 400
+    assert "半角" in full_width.json()["detail"]
+
+    too_long = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "后" * 256})
+    assert too_long.status_code == 400
+    assert "255" in too_long.json()["detail"]
+
+
+def test_legacy_subscription_routes_are_removed(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+
+    assert client.post("/api/subscribe", headers=headers, json={"expression": "实习"}).status_code == 404
+    assert client.get("/api/subscriptions", headers=headers).status_code == 404
 
 
 def test_scan_requires_admin_token(tmp_path: Path) -> None:
@@ -158,8 +189,8 @@ def test_scan_fetches_global_latest_posts_once_for_multiple_subscriptions(tmp_pa
     monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
     monkeypatch.delenv("CC98_SERVICE_REFRESH_TOKEN", raising=False)
 
-    first = client.post("/api/v1/subscriptions", headers=headers, json={"name": "新生", "description": ""})
-    second = client.post("/api/v1/subscriptions", headers=headers, json={"name": "校园", "description": ""})
+    first = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "新生"})
+    second = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "校园"})
     assert first.status_code == 200
     assert second.status_code == 200
 
@@ -193,13 +224,13 @@ def test_scan_fetches_global_latest_posts_once_for_multiple_subscriptions(tmp_pa
 def test_notification_without_channel_is_history_only_and_not_backfilled(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)
-    assert client.post("/api/v1/subscriptions", headers=headers, json={"name": "CC98 AI", "description": ""}).status_code == 200
+    assert client.post("/api/v1/subscriptions", headers=headers, json={"expression": "CC98 AI"}).status_code == 200
 
     first_scan = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
     assert first_scan.status_code == 200
     assert first_scan.json()["created_notifications"] >= 1
-    notification = client.get("/api/v1/notifications", headers=headers).json()[0]
-    assert notification["dispatch_pending"] is False
+    assert first_scan.json()["queued_notifications"] == 0
+    assert client.get("/api/v1/notifications", headers=headers).json()
 
     assert client.put(
         "/api/v1/notification-channels",
@@ -232,7 +263,6 @@ def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:
         "/api/v1/notification-channels",
         headers=headers,
         json={
-            "user_id": "demo_user",
             "provider": "dingtalk",
             "enabled": True,
             "notify_interval_minutes": 1,
@@ -243,7 +273,24 @@ def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["notify_interval_minutes"] == 10
-    assert data["config"]["notify_interval_minutes"] == 10
+    assert "notify_interval_minutes" not in data["config"]
+
+
+def test_channel_test_uses_draft_config_without_saving(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    headers, _user_id = _login(client)
+
+    from app import main
+
+    monkeypatch.setattr(main, "send_notification", lambda *args, **kwargs: SendResult(ok=True, status="sent"))
+    response = client.post(
+        "/api/v1/notification-channels/test",
+        headers=headers,
+        json={"provider": "dingtalk", "config": {"webhook": "https://example.com/draft"}},
+    )
+
+    assert response.status_code == 200
+    assert client.get("/api/v1/notification-channels", headers=headers).json() == []
 
 
 def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch) -> None:
@@ -254,7 +301,6 @@ def test_notification_interval_defers_pending_batch(tmp_path: Path, monkeypatch)
         "/api/v1/notification-channels",
         headers=headers,
         json={
-            "user_id": "demo_user",
             "provider": "dingtalk",
             "enabled": True,
             "notify_interval_minutes": 60,
@@ -362,8 +408,8 @@ def test_user_dispatch_cycle_ignores_channel_delay_and_allows_scheduler_grace(tm
 def test_first_matching_subscription_wins_for_same_user_topic(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     headers, user_id = _login(client)
-    first = client.post("/api/v1/subscriptions", headers=headers, json={"name": "新生", "description": ""})
-    second = client.post("/api/v1/subscriptions", headers=headers, json={"name": "校园", "description": ""})
+    first = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "新生"})
+    second = client.post("/api/v1/subscriptions", headers=headers, json={"expression": "校园"})
     assert first.status_code == 200
     assert second.status_code == 200
 
@@ -495,8 +541,8 @@ def test_all_enabled_channels_are_attempted_and_failure_is_not_requeued(tmp_path
         assert result["dispatch_failures"] == 1
         assert notification.dispatch_pending is False
         failed = db.query(NotificationChannel).filter(NotificationChannel.user_id == user_id, NotificationChannel.provider == "dingtalk").one()
-        assert failed.last_test_status == "failed"
-        assert failed.last_error == "bad webhook"
+        assert failed.last_dispatch_status == "failed"
+        assert failed.last_dispatch_error == "bad webhook"
     finally:
         db.close()
 
@@ -504,7 +550,7 @@ def test_all_enabled_channels_are_attempted_and_failure_is_not_requeued(tmp_path
 def test_scan_paginates_to_old_cursor_and_saves_first_topic_as_new_cursor(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)
-    assert client.post("/api/v1/subscriptions", headers=headers, json={"name": "目标", "description": ""}).status_code == 200
+    assert client.post("/api/v1/subscriptions", headers=headers, json={"expression": "目标"}).status_code == 200
     monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
     monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
 
@@ -590,7 +636,7 @@ def test_cursor_gap_preserves_old_cursor(tmp_path: Path, monkeypatch) -> None:
 def test_first_scan_establishes_server_baseline_without_historical_notifications(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)
-    assert client.post("/api/v1/subscriptions", headers=headers, json={"name": "最新", "description": ""}).status_code == 200
+    assert client.post("/api/v1/subscriptions", headers=headers, json={"expression": "最新"}).status_code == 200
     monkeypatch.setenv("WATCH_INITIAL_CURSOR_MODE", "baseline")
     monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
     monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
@@ -746,7 +792,7 @@ def test_email_notification_accepts_to_email(monkeypatch) -> None:
 
 
 def test_keyword_expression_uses_space_and_slash_synonym_or() -> None:
-    subscription = {"name": "微积分/微甲/vjf 历年卷 资料", "description": ""}
+    subscription = {"expression": "微积分/微甲/vjf 历年卷 资料"}
 
     synonym_hit = rule_match(
         subscription,
@@ -776,12 +822,26 @@ def test_keyword_expression_uses_space_and_slash_synonym_or() -> None:
 
 
 def test_keyword_expression_can_model_a_and_b_or_c() -> None:
-    subscription = {"name": "计算机学院/计院 保研/推免", "description": ""}
+    subscription = {"expression": "计算机学院/计院 保研/推免"}
 
     result = rule_match(subscription, {"title": "计院推免通知整理", "content": ""})
 
     assert result.matched is True
     assert "计院 + 推免" in result.reason
+
+
+def test_keyword_expression_keeps_non_operator_punctuation_literal() -> None:
+    subscription = {"expression": "C++ 后端/服务端"}
+
+    result = rule_match(subscription, {"title": "C++ 服务端开发交流", "content": ""})
+    assert result.matched is True
+    assert "C++ + 服务端" in result.reason
+
+    comma_is_literal = rule_match(
+        {"expression": "实习，校招"},
+        {"title": "实习和校招信息", "content": ""},
+    )
+    assert comma_is_literal.matched is False
 
 
 def test_cc98_requests_ignore_system_proxy_by_default(monkeypatch) -> None:
@@ -888,6 +948,7 @@ def test_legacy_sqlite_notifications_are_deduplicated_and_retired(tmp_path: Path
     columns = {column["name"] for column in inspector.get_columns("notifications")}
     assert "dispatch_pending" in columns
     assert "subscription_id" not in columns
+    assert "is_read" not in columns
     assert any(set(item["column_names"]) == {"user_id", "topic_id"} for item in inspector.get_unique_constraints("notifications"))
     with migration_engine.connect() as connection:
         rows = connection.execute(
@@ -898,6 +959,131 @@ def test_legacy_sqlite_notifications_are_deduplicated_and_retired(tmp_path: Path
     assert rows[0].matched_reason == "first reason"
     assert rows[0].dispatch_pending == 0
     assert rows[0].dispatch_processed_at is not None
+
+
+def test_removing_is_read_preserves_current_pending_queue(tmp_path: Path, monkeypatch) -> None:
+    from sqlalchemy import create_engine, inspect, text
+
+    from app import database
+
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'current-notifications.db'}")
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE notifications ("
+                "id INTEGER NOT NULL PRIMARY KEY, user_id VARCHAR(64) NOT NULL, topic_id VARCHAR(128) NOT NULL, "
+                "topic_title VARCHAR(500) NOT NULL, topic_url TEXT NOT NULL, matched_reason TEXT, "
+                "dispatch_pending BOOLEAN NOT NULL DEFAULT 0, dispatch_processed_at DATETIME, "
+                "is_read BOOLEAN NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, "
+                "UNIQUE (user_id, topic_id))"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notifications "
+                "(id, user_id, topic_id, topic_title, topic_url, dispatch_pending, is_read, created_at) "
+                "VALUES (1, 'user-1', 'pending-topic', 'pending', 'https://example.com/pending', 1, 0, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database.init_db()
+
+    assert "is_read" not in {column["name"] for column in inspect(migration_engine).get_columns("notifications")}
+    with migration_engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT dispatch_pending, dispatch_processed_at FROM notifications WHERE id = 1")
+        ).one()
+    assert row.dispatch_pending == 1
+    assert row.dispatch_processed_at is None
+
+
+def test_legacy_channel_and_rate_limit_status_are_migrated(tmp_path: Path, monkeypatch) -> None:
+    from sqlalchemy import create_engine, inspect, text
+
+    from app import database
+
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'legacy-channel-status.db'}")
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE notification_channels ("
+                "id INTEGER NOT NULL PRIMARY KEY, user_id VARCHAR(64) NOT NULL, provider VARCHAR(32) NOT NULL, "
+                "config_json TEXT NOT NULL, enabled BOOLEAN NOT NULL, last_test_at DATETIME, last_sent_at DATETIME, "
+                "last_attempted_at DATETIME, last_test_status VARCHAR(64), last_error TEXT, "
+                "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO notification_channels "
+                "(id, user_id, provider, config_json, enabled, last_test_status, last_error, created_at, updated_at) "
+                "VALUES (1, 'user-1', 'dingtalk', '{}', 1, 'failed', 'bad webhook', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE notification_read_states ("
+                "user_id VARCHAR(64) NOT NULL PRIMARY KEY, last_success_at DATETIME NOT NULL)"
+            )
+        )
+        connection.execute(
+            text("INSERT INTO notification_read_states VALUES ('user-1', CURRENT_TIMESTAMP)")
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database.init_db()
+
+    with migration_engine.connect() as connection:
+        channel = connection.execute(
+            text("SELECT last_dispatch_status, last_dispatch_error FROM notification_channels WHERE id = 1")
+        ).one()
+        rate_count = connection.execute(text("SELECT COUNT(*) FROM notification_list_rate_limit_states")).scalar_one()
+    assert channel.last_dispatch_status == "failed"
+    assert channel.last_dispatch_error == "bad webhook"
+    assert rate_count == 1
+    assert "notification_read_states" not in inspect(migration_engine).get_table_names()
+
+
+def test_legacy_sqlite_subscriptions_are_migrated_to_expressions(tmp_path: Path, monkeypatch) -> None:
+    from sqlalchemy import create_engine, inspect, text
+
+    from app import database
+
+    migration_engine = create_engine(f"sqlite:///{tmp_path / 'legacy-subscriptions.db'}")
+    with migration_engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE subscriptions ("
+                "id INTEGER NOT NULL PRIMARY KEY, user_id VARCHAR(64) NOT NULL, "
+                "name VARCHAR(255) NOT NULL, description TEXT NOT NULL, board_id VARCHAR(128), "
+                "status VARCHAR(32) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO subscriptions "
+                "(id, user_id, name, description, board_id, status, created_at, updated_at) VALUES "
+                "(1, 'user-1', 'display only', 'C++，后端/服务端', NULL, 'paused', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+                "(2, 'user-1', 'AI 校招', '', NULL, 'enabled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+    monkeypatch.setattr(database, "engine", migration_engine)
+    database.init_db()
+
+    inspector = inspect(migration_engine)
+    columns = {column["name"] for column in inspector.get_columns("subscriptions")}
+    assert "expression" in columns
+    assert "name" not in columns
+    assert "description" not in columns
+    assert "board_id" not in columns
+    with migration_engine.connect() as connection:
+        rows = connection.execute(text("SELECT id, expression, status FROM subscriptions ORDER BY id")).all()
+    assert [(row.id, row.expression, row.status) for row in rows] == [
+        (1, "C++ 后端/服务端", "paused"),
+        (2, "AI 校招", "enabled"),
+    ]
 
 
 def test_legacy_notification_preferences_gain_user_dispatch_timestamp(tmp_path: Path, monkeypatch) -> None:

@@ -443,14 +443,14 @@ def _send_notification_batch(
             db.commit()
 
         if channel_errors:
-            channel.last_test_status = "failed"
-            channel.last_error = "; ".join(channel_errors)[:2000]
+            channel.last_dispatch_status = "failed"
+            channel.last_dispatch_error = "; ".join(channel_errors)[:2000]
         elif channel_attempted and channel_succeeded:
-            channel.last_test_status = "sent"
-            channel.last_error = None
+            channel.last_dispatch_status = "sent"
+            channel.last_dispatch_error = None
         else:
-            channel.last_test_status = "deduplicated"
-            channel.last_error = None
+            channel.last_dispatch_status = "deduplicated"
+            channel.last_dispatch_error = None
         db.commit()
 
     if any_channel_success:
@@ -556,11 +556,7 @@ def _create_matching_notifications(
                 continue
             metrics["candidate_pairs"] += 1
             result = match_subscription_topic(
-                {
-                    "name": subscription.name,
-                    "description": subscription.description,
-                    "board_id": subscription.board_id,
-                },
+                {"expression": subscription.expression},
                 topic,
             )
             if not result.matched:
