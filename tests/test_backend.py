@@ -276,6 +276,95 @@ def test_channel_interval_is_not_faster_than_scan(tmp_path: Path) -> None:
     assert "notify_interval_minutes" not in data["config"]
 
 
+def test_channel_status_toggle_and_partial_config_update(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    headers, user_id = _login(client)
+
+    missing_config = client.put(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={"provider": "dingtalk", "enabled": True},
+    )
+    assert missing_config.status_code == 400
+
+    created = client.put(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={
+            "provider": "dingtalk",
+            "enabled": True,
+            "config": {
+                "webhook": "https://example.com/full-webhook-token",
+                "secret": "full-secret",
+                "timeout": 10,
+            },
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["enabled"] is True
+
+    disabled = client.patch(
+        "/api/v1/notification-channels/dingtalk",
+        headers=headers,
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+
+    partial = client.put(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={"provider": "dingtalk", "enabled": False, "config": {"timeout": 20}},
+    )
+    assert partial.status_code == 200
+
+    from app.database import SessionLocal
+    from app.models import NotificationChannel
+    from app.utils import json_loads
+
+    db = SessionLocal()
+    try:
+        channel = (
+            db.query(NotificationChannel)
+            .filter(NotificationChannel.user_id == user_id, NotificationChannel.provider == "dingtalk")
+            .one()
+        )
+        config = json_loads(channel.config_json, {})
+        assert config == {
+            "webhook": "https://example.com/full-webhook-token",
+            "secret": "full-secret",
+            "timeout": 20,
+        }
+    finally:
+        db.close()
+
+    enabled = client.patch(
+        "/api/v1/notification-channels/dingtalk",
+        headers=headers,
+        json={"enabled": True},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+
+
+def test_channel_status_toggle_is_user_scoped(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    first_headers, _first_user_id = _login(client, "first@zju.edu.cn")
+    second_headers, _second_user_id = _login(client, "second@zju.edu.cn")
+    assert client.put(
+        "/api/v1/notification-channels",
+        headers=first_headers,
+        json={"provider": "email", "enabled": True, "config": {"to": "first@zju.edu.cn"}},
+    ).status_code == 200
+
+    response = client.patch(
+        "/api/v1/notification-channels/email",
+        headers=second_headers,
+        json={"enabled": False},
+    )
+    assert response.status_code == 404
+
+
 def test_channel_test_uses_draft_config_without_saving(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     headers, _user_id = _login(client)

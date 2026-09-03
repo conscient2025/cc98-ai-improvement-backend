@@ -60,6 +60,7 @@
 
 - `GET /api/v1/notification-channels`
 - `PUT /api/v1/notification-channels`
+- `PATCH /api/v1/notification-channels/{provider}`
 - `POST /api/v1/notification-channels/test`
 
 保存 DingTalk：
@@ -88,6 +89,12 @@
     "subject_prefix": "CC98 订阅提醒"
   }
 }
+```
+
+首次保存某个渠道时必须提供完整 `config`。之后使用 PUT 修改配置时，`config` 按字段合并；未提交的字段会保留，因此前端不要把响应中的 `***` 当作真实密钥回传。只修改启用状态应调用独立的 PATCH 接口并立即生效：
+
+```json
+{ "enabled": false }
 ```
 
 测试接口只使用请求中的临时 `provider` 和 `config` 发送测试消息，不保存配置，也不覆盖正式投递状态。

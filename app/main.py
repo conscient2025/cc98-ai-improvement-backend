@@ -29,8 +29,10 @@ from .schemas import (
     HealthResponse,
     NotificationChannelOut,
     NotificationChannelSave,
+    NotificationChannelStatusUpdate,
     NotificationChannelTest,
     NotificationOut,
+    NotificationProvider,
     ScanResponse,
     SubscriptionCreate,
     SubscriptionOut,
@@ -220,6 +222,8 @@ def _get_or_create_channel(db: Session, payload: NotificationChannelSave, user_i
         .first()
     )
     if channel is None:
+        if payload.config is None:
+            raise HTTPException(status_code=400, detail="首次保存通知渠道时必须提供配置")
         config = dict(payload.config)
         channel = models.NotificationChannel(
             user_id=target_user_id,
@@ -230,11 +234,13 @@ def _get_or_create_channel(db: Session, payload: NotificationChannelSave, user_i
         db.add(channel)
     else:
         old_config = json_loads(channel.config_json, {})
-        new_config = dict(payload.config)
-        for secret_key in ("secret", "token", "password", "smtp_password"):
-            if new_config.get(secret_key) == "***" and old_config.get(secret_key):
-                new_config[secret_key] = old_config[secret_key]
-        channel.config_json = json_dumps(new_config)
+        if payload.config is not None:
+            new_config = dict(old_config)
+            for key, value in payload.config.items():
+                if key in {"webhook", "secret", "token", "password", "smtp_password"} and value == "***":
+                    continue
+                new_config[key] = value
+            channel.config_json = json_dumps(new_config)
         channel.enabled = payload.enabled
         channel.updated_at = utc_now()
     db.commit()
@@ -366,6 +372,30 @@ def save_channel(
     current_user: models.User = Depends(_require_current_user),
 ) -> NotificationChannelOut:
     return _channel_out(db, _get_or_create_channel(db, payload, current_user.id))
+
+
+@app.patch("/api/v1/notification-channels/{provider}", response_model=NotificationChannelOut)
+def update_channel_status(
+    provider: NotificationProvider,
+    payload: NotificationChannelStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(_require_current_user),
+) -> NotificationChannelOut:
+    channel = (
+        db.query(models.NotificationChannel)
+        .filter(
+            models.NotificationChannel.user_id == current_user.id,
+            models.NotificationChannel.provider == provider,
+        )
+        .first()
+    )
+    if channel is None:
+        raise HTTPException(status_code=404, detail="通知渠道不存在，请先保存配置")
+    channel.enabled = payload.enabled
+    channel.updated_at = utc_now()
+    db.commit()
+    db.refresh(channel)
+    return _channel_out(db, channel)
 
 
 @app.post("/api/v1/notification-channels/test")

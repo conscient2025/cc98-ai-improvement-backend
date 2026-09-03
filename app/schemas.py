@@ -64,8 +64,12 @@ class SubscriptionOut(BaseModel):
 class NotificationChannelSave(BaseModel):
     provider: NotificationProvider
     enabled: bool = False
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, Any] | None = None
     notify_interval_minutes: int | None = Field(default=None, ge=1)
+
+
+class NotificationChannelStatusUpdate(BaseModel):
+    enabled: bool
 
 
 class NotificationChannelTest(BaseModel):

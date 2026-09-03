@@ -51,9 +51,12 @@
 
 - `GET /api/v1/notification-channels`
 - `PUT /api/v1/notification-channels`
+- `PATCH /api/v1/notification-channels/{provider}`
 - `POST /api/v1/notification-channels/test`
 
-页面只需要一个通知间隔选择器。测试接口使用当前表单里的临时配置发送消息，不会保存；保存必须调用 PUT。
+页面只需要一个通知间隔选择器。首次配置渠道时，调用 PUT 提交完整配置并启用；已有渠道的配置更新仍调用 PUT，`config` 会按字段合并，空白的敏感字段应省略。启用或停用已有渠道时调用 PATCH，请求体为 `{ "enabled": true | false }`，成功后应立即刷新状态，不再要求用户另点保存。
+
+测试接口使用当前表单里的临时配置发送消息，不会保存，也不会改变渠道启用状态。
 
 渠道正式投递状态由以下字段提供：
 
