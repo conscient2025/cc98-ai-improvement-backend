@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import smtplib
 import ssl
 import time
@@ -23,6 +24,20 @@ class SendResult:
 
 
 NotificationItem = dict[str, str | None]
+
+
+def redact_delivery_error(error: object, config: dict[str, Any] | None = None) -> str:
+    safe = str(error)
+    config = config or {}
+    for key in ("webhook", "secret", "token", "password", "smtp_password"):
+        value = str(config.get(key) or "")
+        if value:
+            safe = safe.replace(value, "<redacted>")
+    return re.sub(
+        r"(?i)(access_token|secret|sign|token|password)=([^&\s]+)",
+        r"\1=<redacted>",
+        safe,
+    )[:2000]
 
 
 def redact_config(provider: str, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -78,11 +93,11 @@ def send_dingtalk(config: dict[str, Any], text: str) -> SendResult:
         response.raise_for_status()
         data = response.json()
     except Exception as exc:  # noqa: BLE001
-        return SendResult(ok=False, status="failed", error=str(exc))
+        return SendResult(ok=False, status="failed", error=redact_delivery_error(exc, config))
 
     if data.get("errcode") in (0, None):
         return SendResult(ok=True, status="sent")
-    return SendResult(ok=False, status="failed", error=str(data))
+    return SendResult(ok=False, status="failed", error=redact_delivery_error(data, config))
 
 
 def _smtp_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -123,7 +138,7 @@ def _send_email(to_addr: str, subject: str, body: str, config: dict[str, Any] | 
                 server.login(smtp["username"], smtp["password"])
                 server.send_message(message)
     except Exception as exc:  # noqa: BLE001
-        return SendResult(ok=False, status="failed", error=str(exc))
+        return SendResult(ok=False, status="failed", error=redact_delivery_error(exc, config))
     return SendResult(ok=True, status="sent")
 
 

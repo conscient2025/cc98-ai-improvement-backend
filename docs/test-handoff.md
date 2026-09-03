@@ -1,556 +1,83 @@
 # 测试交接文档
 
-这份文档给测试同学用，目标是快速验证后端 MVP 是否可演示、接口是否稳定。
-
-## 测试范围
-
-本后端负责：
-
-- 产品账号邮箱验证码登录。
-- Watch 订阅创建、查看、暂停、恢复、删除。
-- CC98 新帖扫描，默认可用 mock 数据。
-- 订阅和帖子匹配。
-- 通知记录落库。
-- DingTalk 通知渠道配置和测试。
-- 邮箱通知渠道配置和测试。
-- Worker 健康状态和扫描结果统计。
-
-本后端暂不负责：
-
-- 浏览器插件里的正式 AI 搜索。
-- 历史搜索/历史查阅功能。
-- 用户自己的 CC98 Token 管理。
-- 用户自己的 LLM API Key 管理。
-
-## 本地准备
-
-```powershell
-pip install -r requirements.txt
-Copy-Item .env.example .env
-python -m uvicorn app.main:app --port 8000 --reload
-```
-
-建议 `.env`：
-
-```text
-WATCH_FORCE_MOCK_TOPICS=true
-MATCHER_FORCE_RULES=true
-ENABLE_SCHEDULER=false
-AUTH_DEV_PRINT_CODE=true
-AUTH_EMAIL_DELIVERY=false
-ADMIN_API_TOKEN=本地测试管理员密钥
-SCAN_INTERVAL_MINUTES=10
-```
-
-如果测试真实 CC98 新帖扫描，需要配置公共 CC98 服务账号。扫描对象是 CC98 的“查看新帖”列表，即全站多个版块汇总出来的新帖，不需要配置版块 ID。
-
-```text
-CC98_SERVICE_USERNAME=公共 CC98 账号
-CC98_SERVICE_PASSWORD=公共 CC98 密码
-WATCH_FORCE_MOCK_TOPICS=false
-CC98_TRUST_ENV=false
-```
-
-`CC98_TRUST_ENV=false` 表示后端访问 CC98 时不读取本机系统代理。测试机如果开了 Clash 但直连 CC98 可用，保持这个值即可；只有确实需要后端通过系统代理访问 CC98 时才改成 `true`。
-
-如果要测试真实网易邮箱订阅推送，把 `.env` 改成：
-
-```text
-SMTP_HOST=smtp.163.com
-SMTP_PORT=465
-SMTP_USE_SSL=true
-SMTP_USERNAME=你的网易邮箱
-SMTP_PASSWORD=网易邮箱授权码
-SMTP_FROM=你的网易邮箱
-```
-
-接口文档页面：
-
-```text
-http://127.0.0.1:8000/docs
-```
-
 ## 自动化测试
 
 ```powershell
-python -m compileall app tests
 python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 ```
 
-当前预期：
+当前测试覆盖登录鉴权、订阅表达式、订阅总数限制、扫描游标、通知唯一性、批量投递、渠道状态、通知列表限频和 SQLite 旧表迁移。
+
+## 订阅表达式
+
+应接受：
 
 ```text
-16 passed
+C++ 后端/服务端 实习
+C# 校招
+.NET/Node.js 开发
 ```
 
-如果出现 FastAPI `on_event` deprecation warning，可以忽略，不影响功能。
-
-## 上线前安全测试
-
-下面 4 项是公网开放前必须回归的安全测试。建议先在本地测代码逻辑，再部署服务器测真实配置。
-
-### A. 用户接口必须登录
-
-未登录直接请求：
-
-```http
-GET /api/v1/subscriptions
-```
-
-预期：HTTP 401。
-
-登录后请求：
-
-```http
-GET /api/v1/subscriptions
-Authorization: Bearer <access_token>
-```
-
-预期：HTTP 200，只返回当前 token 对应用户的订阅。
-
-再做一个越权测试：
-
-- 用用户 A 登录并创建订阅。
-- 用用户 B 登录。
-- 用用户 B 的 token 修改或删除用户 A 的订阅 ID。
-
-预期：HTTP 403，不能操作其他用户的订阅。
-
-### B. 后台接口必须有管理员密钥
-
-不带管理员密钥：
-
-```http
-POST /api/v1/tasks/scan
-```
-
-预期：HTTP 401。
-
-带错误管理员密钥：
-
-```http
-POST /api/v1/tasks/scan
-X-Admin-Token: wrong-token
-```
-
-预期：HTTP 401。
-
-带正确管理员密钥：
-
-```http
-POST /api/v1/tasks/scan
-X-Admin-Token: <ADMIN_API_TOKEN>
-```
-
-预期：HTTP 200，并返回扫描统计。
-
-`GET /api/v1/admin/health` 同样要按这个逻辑测试。
-
-### C. 验证码必须能真实发邮件
-
-本地开发模式可以这样测：
+应拒绝：
 
 ```text
-AUTH_DEV_PRINT_CODE=true
-AUTH_EMAIL_DELIVERY=false
+空字符串
+猫
+/实习
+实习/
+实习//校招
+实习／校招
+超过 255 字符的表达式
+++
 ```
 
-预期：请求验证码接口返回 `dev_code`。
+确认只有空白表示 AND、半角 `/` 表示 OR，其他标点按字面量保留。`实习，校招` 应当是一个完整关键词，不应等价于 `实习 校招`。
 
-真实邮件模式这样测：
+## 订阅数量
 
-```text
-AUTH_DEV_PRINT_CODE=false
-AUTH_EMAIL_DELIVERY=true
-SMTP_HOST=smtp.163.com
-SMTP_PORT=465
-SMTP_USE_SSL=true
-SMTP_USERNAME=cc98aiimprove@163.com
-SMTP_PASSWORD=网易邮箱授权码
-SMTP_FROM=cc98aiimprove@163.com
-```
+1. 创建 10 条订阅，其中部分设为 paused。
+2. 第 11 条创建必须返回 400。
+3. 暂停已有订阅不会释放名额。
+4. 恢复暂停订阅应成功。
+5. 删除一条后可以再创建一条。
 
-预期：
+## 通知列表
 
-- 请求验证码接口 HTTP 200。
-- 响应里 `dev_code=null`。
-- 目标浙大邮箱收到验证码邮件。
+- 用户接口必须携带 Bearer token，且只能读取自己的数据。
+- 同一用户 60 秒内第二次成功读取返回 429 和 `Retry-After`。
+- 不同用户互不影响。
+- 每个用户最多返回最近 100 条。
+- 响应不包含 `is_read`、`delivery_status`、`dispatch_pending` 等字段。
 
-如果 SMTP 配置错误，预期请求验证码接口返回 HTTP 503，不能假装发送成功。
+## 通知渠道
 
-### D. 生产环境不能回退 mock
+- 邮箱和 DingTalk 均启用时，每轮都各尝试一次。
+- 一个渠道成功、另一个失败时，通知不重新入队。
+- 失败渠道写入 `last_dispatch_status=failed` 和脱敏后的 `last_dispatch_error`。
+- 测试接口使用请求中的临时配置，调用后渠道列表不应新增或修改记录。
+- 用户请求的通知间隔小于扫描间隔时，后端返回有效扫描间隔。
+- 首次保存渠道时缺少 `config` 应返回 400；已有渠道可只提交需要修改的配置字段，未提交的密钥必须保留。
+- PATCH 启用或停用渠道应立即生效，并且只能修改当前登录用户自己的渠道。
 
-设置生产模式，并故意不配置 CC98 服务账号：
+## SQLite 迁移
 
-```text
-APP_ENV=production
-WATCH_FORCE_MOCK_TOPICS=false
-CC98_SERVICE_USERNAME=
-CC98_SERVICE_PASSWORD=
-CC98_SERVICE_REFRESH_TOKEN=
-```
+部署前备份数据库。启动新版后确认：
 
-然后触发扫描：
+- `subscriptions` 只有 `expression`，旧 `name`、`description`、`board_id` 已移除。
+- 旧 description 非空时迁移为 expression，否则使用旧 name。
+- 旧逗号、顿号、分号先转换为空格，以保留旧 AND 语义。
+- `notifications.is_read` 已移除，待投递状态保持不变。
+- 通知列表限频状态迁移到 `notification_list_rate_limit_states`。
+- 渠道正式状态可从 `last_dispatch_status` 和 `last_dispatch_error` 读取。
 
-```http
-POST /api/v1/tasks/scan
-X-Admin-Token: <ADMIN_API_TOKEN>
-```
+迁移遇到不合法或重复的旧订阅表达式时必须失败并报告 ID，不允许截断或静默删除。
 
-预期：扫描明确失败，不应返回 `source=mock`。
+## 生产烟测
 
-开发环境如果要用 mock，需要明确设置：
+1. `GET /api/v1/health` 返回 200。
+2. 无 token 访问 `/api/v1/subscriptions` 返回 401。
+3. 旧 `/api/subscriptions` 返回 404。
+4. `systemctl is-active cc98-backend.service` 返回 active。
+5. 检查服务日志没有迁移异常或连续扫描失败。
 
-```text
-APP_ENV=development
-WATCH_FORCE_MOCK_TOPICS=true
-```
-
-## 手工测试用例
-
-### 1. 健康检查
-
-```http
-GET /api/v1/health
-```
-
-预期：
-
-- HTTP 200。
-- `status=ok`。
-- `components.database=ok`。
-
-### 2. 邮箱验证码登录
-
-请求验证码：
-
-```http
-POST /api/v1/auth/request-code
-Content-Type: application/json
-```
-
-```json
-{ "email": "student@zju.edu.cn" }
-```
-
-预期：
-
-- HTTP 200。
-- 开发环境返回 `dev_code`。
-- 如果要测试真实邮件，把 `AUTH_EMAIL_DELIVERY=true` 并配置 SMTP；生产环境应设置 `AUTH_DEV_PRINT_CODE=false`。
-
-验证：
-
-```http
-POST /api/v1/auth/verify-code
-Content-Type: application/json
-```
-
-```json
-{ "email": "student@zju.edu.cn", "code": "上一步返回的 dev_code" }
-```
-
-预期：
-
-- HTTP 200。
-- 返回 `access_token`。
-- 返回用户信息。
-- 后续用户接口都要带 `Authorization: Bearer <access_token>`。
-
-反例：
-
-- 非浙大邮箱应返回 400。
-- 错误验证码应返回 400。
-
-### 3. 创建订阅
-
-```http
-POST /api/v1/subscriptions
-Content-Type: application/json
-Authorization: Bearer <access_token>
-```
-
-```json
-{
-  "user_id": "demo_user",
-  "name": "CC98 AI",
-  "description": "search and watch notification",
-  "board_id": null
-}
-```
-
-预期：
-
-- HTTP 200。
-- `status=enabled`。
-- `active=true`。
-- 返回里的 `user_id` 应是 token 对应的用户 ID，不是请求体里的 `demo_user`。
-
-关键词规则：
-
-- 空格分隔表示 AND：`计算机学院 保研` 需要两个词都命中。
-- 斜杠 `/` 表示同义词 OR：`微积分/微甲/vjf 历年卷 资料` 表示必须命中 `历年卷` 和 `资料`，同时还要命中 `微积分`、`微甲`、`vjf` 之一。
-
-### 4. 订阅列表
-
-```http
-GET /api/v1/subscriptions
-Authorization: Bearer <access_token>
-```
-
-预期：
-
-- 返回数组。
-- 包含刚才创建的订阅。
-
-### 5. 暂停和恢复订阅
-
-暂停：
-
-```http
-PATCH /api/v1/subscriptions/{id}
-Content-Type: application/json
-Authorization: Bearer <access_token>
-```
-
-```json
-{ "status": "paused" }
-```
-
-预期：`active=false`。
-
-恢复：
-
-```json
-{ "status": "enabled" }
-```
-
-预期：`active=true`。
-
-### 6. 订阅数量限制
-
-`.env` 默认：
-
-```text
-SUBSCRIPTION_LIMIT=10
-```
-
-同一个 `user_id` 创建超过 10 个启用订阅时，预期返回 400。
-
-注意：现在实际按 token 对应的用户统计，不按请求体里的 `user_id` 统计。
-
-### 7. 手动扫描新帖
-
-```http
-POST /api/v1/tasks/scan
-X-Admin-Token: <ADMIN_API_TOKEN>
-```
-
-mock 模式预期：
-
-- HTTP 200。
-- `scanned_subscriptions >= 1`。
-- `fetched_topics >= 1`。
-- 首次扫描 `created_notifications >= 1`。
-- 第二次重复扫描 `created_notifications=0`，因为通知有唯一约束。
-- 如果本次有多个新通知，DingTalk/邮箱应收到一条聚合消息，而不是多条刷屏消息。
-
-重要：如果扫描时还没有配置通知渠道，匹配通知会保留为 `delivery_status=pending`。之后配置好 DingTalk/邮箱，再触发下一轮扫描，后端会把这些 pending 通知补发出去。
-
-### 8. 通知历史
-
-```http
-GET /api/v1/notifications
-Authorization: Bearer <access_token>
-```
-
-预期：
-
-- 返回通知数组。
-- 每条通知有 `topic_title`、`topic_url`、`matched_reason`。
-- 未配置通知渠道时 `delivery_status=pending`，配置渠道后下一轮扫描可补发。
-- `matched_reason` 应显示命中的搜索表达式，例如 `命中搜索表达式：微甲 + 历年卷 + 资料`。
-
-### 9. 真实订阅通知全链路
-
-这组测试用于排查“明明有匹配主题但没收到通知”的问题。建议用当前 CC98 新帖里已经能看到的词，例如军训季可以用 `军训`，不要用单字关键词。
-
-步骤：
-
-1. 登录拿到 `access_token`。
-2. 先保存一个通知渠道，DingTalk 或邮箱任选一种。
-3. 调通知渠道测试接口，确认能收到测试消息。
-4. 创建订阅，例如：
-
-```json
-{ "name": "军训", "description": "" }
-```
-
-5. 手动触发扫描：
-
-```http
-POST /api/v1/tasks/scan
-X-Admin-Token: <ADMIN_API_TOKEN>
-```
-
-6. 看扫描返回值：
-
-- `source` 应为 `cc98_new_posts`，真实扫描不应是 `mock`。
-- `fetched_topics > 0` 表示确实拉到了 CC98 新帖。
-- `matched_pairs > 0` 表示订阅命中了帖子。
-- `created_notifications > 0` 表示生成了通知记录。
-- `sent_notifications > 0` 表示已经推送到 DingTalk/邮箱。
-
-如果 `matched_pairs > 0` 但 `sent_notifications=0`，再查：
-
-```http
-GET /api/v1/notification-channels
-Authorization: Bearer <access_token>
-```
-
-确认：
-
-- 渠道 `enabled=true`。
-- DingTalk webhook 或邮箱收件地址配置正确。
-- `notify_interval_minutes` 没有设置得太长；如果设置 60 分钟，未到时间会先保留 pending，之后聚合发送。
-
-### 10. DingTalk 通知渠道
-
-保存配置：
-
-```http
-PUT /api/v1/notification-channels
-Content-Type: application/json
-Authorization: Bearer <access_token>
-```
-
-```json
-{
-  "user_id": "demo_user",
-  "provider": "dingtalk",
-  "enabled": true,
-  "notify_interval_minutes": 60,
-  "config": {
-    "webhook": "真实 DingTalk webhook",
-    "secret": "真实 secret，可为空"
-  }
-}
-```
-
-测试：
-
-```http
-POST /api/v1/notification-channels/test
-Authorization: Bearer <access_token>
-```
-
-预期：
-
-- 配置正确：HTTP 200。
-- 配置错误：HTTP 400，并返回错误原因。
-- 获取配置时 secret 被隐藏为 `***`。
-- 返回的 `notify_interval_minutes` 是实际生效值，不会小于 `SCAN_INTERVAL_MINUTES`。
-
-### 11. 邮箱通知渠道
-
-保存配置：
-
-```http
-PUT /api/v1/notification-channels
-Content-Type: application/json
-Authorization: Bearer <access_token>
-```
-
-```json
-{
-  "user_id": "demo_user",
-  "provider": "email",
-  "enabled": true,
-  "notify_interval_minutes": 60,
-  "config": {
-    "to": "student@zju.edu.cn",
-    "subject_prefix": "CC98 订阅提醒"
-  }
-}
-```
-
-测试：
-
-```http
-POST /api/v1/notification-channels/test
-Authorization: Bearer <access_token>
-```
-
-预期：
-
-- SMTP 配置正确：HTTP 200，收件邮箱收到测试邮件。
-- SMTP 配置错误：HTTP 400，并返回错误原因。
-- 扫描有多个新帖子时，只收到一封聚合邮件。
-
-### 12. 通知频率
-
-如果 `.env` 里：
-
-```text
-SCAN_INTERVAL_MINUTES=10
-```
-
-保存通知渠道时传：
-
-```json
-{
-  "user_id": "demo_user",
-  "provider": "dingtalk",
-  "enabled": true,
-  "notify_interval_minutes": 1,
-  "config": {
-    "webhook": "真实 DingTalk webhook",
-    "secret": ""
-  }
-}
-```
-
-预期：
-
-- 接口返回 `notify_interval_minutes=10`，因为通知不能比扫描更频繁。
-- 如果用户设置 `notify_interval_minutes=60`，后端会先生成通知记录，但不到 60 分钟不会推送；到时间后把期间积累的匹配帖子聚合成一条消息。
-
-### 13. 管理健康状态
-
-```http
-GET /api/v1/admin/health
-X-Admin-Token: <ADMIN_API_TOKEN>
-```
-
-预期包含：
-
-- `cc98_service_account`
-- `workers`
-- `cursor`
-- `GET /api/v1/health` 的 `components.scan_interval_minutes` 可用于确认扫描间隔。
-
-如果没有真实 CC98 服务账号，`cc98_service_account` 可能不是 ok，这是符合预期的。
-
-## 旧接口回归
-
-为了兼容旧前端，也请抽测：
-
-- `POST /api/subscribe`
-- `GET /api/subscriptions`
-- `DELETE /api/subscribe/{id}`
-- `GET /api/notifications`
-- `GET /api/notification-settings`
-- `PUT /api/notification-settings`
-- `POST /api/tasks/scan`
-
-旧接口能用即可，新功能优先按 `/api/v1/*` 验证。
-
-旧接口也已经接入鉴权：用户相关旧接口要带 `Authorization`，`POST /api/tasks/scan` 要带 `X-Admin-Token`。
-
-## 风险点
-
-- 真实 CC98 新帖抓取依赖 `CC98_SERVICE_USERNAME` / `CC98_SERVICE_PASSWORD` 或 refresh token；扫描的是 CC98 全站新帖列表，不要求订阅带 `board_id`。
-- 真实通知依赖 DingTalk webhook 是否可用。
-- 现在匹配默认是规则匹配，`MATCHER_FORCE_RULES=false` 后才会尝试 LLM。
-- 生产环境不要开启 `WATCH_FORCE_MOCK_TOPICS`，真实 CC98 抓取失败时应直接暴露失败，不能回退 mock。
-- 产品登录验证码现在可以通过 SMTP 发送；本地开发可关闭 `AUTH_EMAIL_DELIVERY` 并用 `dev_code` 测试。
+管理扫描接口 `/api/v1/tasks/scan` 需要 `X-Admin-Token`，不要在日志或测试输出中暴露密钥。

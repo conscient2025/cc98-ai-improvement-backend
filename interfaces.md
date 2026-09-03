@@ -1,20 +1,17 @@
 # CC98 AI 优化项目后端接口说明
 
-后端职责：产品账号、Watch 订阅、通知渠道、通知历史、CC98 服务账号新帖扫描、匹配 worker 和健康状态。
+后端只负责产品账号、订阅新帖提醒、通知渠道、通知历史、定时扫描和健康状态。AI 搜索使用用户本机的 CC98 Token 与 LLM API Key，不经过本后端。
 
-后端现在只保留“订阅新帖提醒”。历史搜索/历史查阅功能已砍掉，`/api/research` 会返回 410。AI 搜索如果后续要做，建议放在浏览器插件里完成，使用用户自己的 CC98 Token 和 LLM API Key。
+除健康检查外，用户接口都需要 `Authorization: Bearer <access_token>`；用户身份只取自 JWT，不接受请求参数中的 `user_id`。管理接口需要 `X-Admin-Token`。
 
 ## 健康检查
 
-- `GET /api/health`
 - `GET /api/v1/health`
 - `GET /api/v1/admin/health`
 
-`/api/v1/admin/health` 会返回 worker 状态、CC98 服务账号状态和 Watch 扫描游标。
+普通健康检查会返回扫描间隔、订阅数量上限、表达式长度上限和通知列表限频。管理健康检查还会返回 worker、CC98 服务账号和扫描游标状态。
 
 ## 产品账号登录
-
-产品账号和 CC98 账号是分开的。MVP 阶段使用浙大邮箱验证码登录。
 
 - `POST /api/v1/auth/request-code`
 
@@ -28,51 +25,48 @@
 { "email": "student@zju.edu.cn", "code": "123456" }
 ```
 
-开发环境下如果 `AUTH_DEV_PRINT_CODE=true`，接口会返回 `dev_code`，方便本地测试。当前网易邮箱只用于订阅帖子推送，不用于登录验证码。
+开发环境设置 `AUTH_DEV_PRINT_CODE=true` 时，请求验证码会返回 `dev_code`。
 
 ## 订阅管理
 
 - `POST /api/v1/subscriptions`
-- `GET /api/v1/subscriptions?user_id=demo_user`
+- `GET /api/v1/subscriptions`
 - `PATCH /api/v1/subscriptions/{id}`
 - `DELETE /api/v1/subscriptions/{id}`
 
 创建订阅：
 
 ```json
-{
-  "user_id": "demo_user",
-  "name": "backend internship",
-  "description": "posts about backend internship and hiring",
-  "board_id": null
-}
+{ "expression": "C++ 后端/服务端 实习" }
 ```
 
-规则：
+修改表达式或状态：
 
-- `status` 只有 `enabled` 和 `paused`。
-- 默认每个用户最多启用 10 个订阅。
-- 为了兼容旧前端，旧字段 `topic` 也可以传，后端会映射成 `name`。
-- 关键词匹配规则：空格分隔表示 AND，斜杠 `/` 表示同义词 OR。例如 `微积分/微甲/vjf 历年卷 资料` 表示必须命中 `历年卷` 和 `资料`，同时还要命中 `微积分`、`微甲`、`vjf` 之一。
+```json
+{ "expression": "C++ 后端/服务端 校招", "status": "paused" }
+```
 
-旧接口兼容：
+表达式规则：
 
-- `POST /api/subscribe`
-- `GET /api/subscriptions`
-- `GET /api/admin/subscriptions`
-- `DELETE /api/subscribe/{id}`
+- 空白字符表示 AND，半角 `/` 表示同义词 OR；只有这两类字符具有语法含义。
+- 其他连续字符按字面量整体匹配，因此 `C++`、`C#`、`.NET`、`Node.js` 都是合法关键词。
+- 每个关键词至少 2 个字符，并且至少包含一个字母、数字或中文字符。
+- `/` 两侧必须有关键词，不接受全角 `／`。
+- 规范化后的表达式最多 255 个字符，英文匹配不区分大小写。
+- 每个用户最多存在 10 条订阅；启用和暂停都会计数，删除后才释放名额。
+- 完全相同的规范化表达式不能重复创建。
 
 ## 通知渠道
 
-- `GET /api/v1/notification-channels?user_id=demo_user`
+- `GET /api/v1/notification-channels`
 - `PUT /api/v1/notification-channels`
+- `PATCH /api/v1/notification-channels/{provider}`
 - `POST /api/v1/notification-channels/test`
 
-DingTalk 配置示例：
+保存 DingTalk：
 
 ```json
 {
-  "user_id": "demo_user",
   "provider": "dingtalk",
   "enabled": true,
   "notify_interval_minutes": 60,
@@ -83,11 +77,10 @@ DingTalk 配置示例：
 }
 ```
 
-邮箱通知配置示例：
+保存邮箱：
 
 ```json
 {
-  "user_id": "demo_user",
   "provider": "email",
   "enabled": true,
   "notify_interval_minutes": 60,
@@ -98,54 +91,51 @@ DingTalk 配置示例：
 }
 ```
 
-默认复用全局 SMTP 配置。网易邮箱配置示例：
+首次保存某个渠道时必须提供完整 `config`。之后使用 PUT 修改配置时，`config` 按字段合并；未提交的字段会保留，因此前端不要把响应中的 `***` 当作真实密钥回传。只修改启用状态应调用独立的 PATCH 接口并立即生效：
 
-```text
-SMTP_HOST=smtp.163.com
-SMTP_PORT=465
-SMTP_USE_SSL=true
-SMTP_USERNAME=你的网易邮箱
-SMTP_PASSWORD=网易邮箱授权码
-SMTP_FROM=你的网易邮箱
+```json
+{ "enabled": false }
 ```
 
-如果想给某个通知渠道单独指定 SMTP，也可以在 `config` 里补 `smtp_host`、`smtp_port`、`smtp_username`、`smtp_password`、`from`。
+测试接口只使用请求中的临时 `provider` 和 `config` 发送测试消息，不保存配置，也不覆盖正式投递状态。
 
-通知频率说明：
+渠道响应中的正式投递状态字段为：
 
-- 扫描频率由后端 `.env` 的 `SCAN_INTERVAL_MINUTES` 固定控制。
-- 通知频率由通知渠道的 `notify_interval_minutes` 控制。
-- 后端会自动保证 `notify_interval_minutes >= SCAN_INTERVAL_MINUTES`。例如扫描每 10 分钟一次，用户传 1 分钟，实际返回和保存都是 10 分钟；用户传 60 分钟，则每小时聚合推送一次。
-- 未到通知时间的匹配帖子会先以 `delivery_status=pending` 保存在通知历史里，到时间后聚合发送。
+```text
+last_attempted_at
+last_sent_at
+last_dispatch_status
+last_dispatch_error
+```
 
-旧接口兼容：
-
-- `GET /api/notification-settings`
-- `PUT /api/notification-settings`
-- `POST /api/notification-settings/test`
+外部提醒采用至多一次语义：到达提醒时间后先出队，再对所有启用渠道各尝试一次；失败不自动补发。通知频率不会快于扫描频率。
 
 ## 通知历史
 
-- `GET /api/v1/notifications?user_id=demo_user`
-- `GET /api/notifications?user_id=demo_user`
+- `GET /api/v1/notifications`
 
-通知去重规则是 `(user_id, subscription_id, topic_id)`，所以重复扫描不会给同一个用户、同一个订阅、同一个帖子重复生成提醒。
+接口按 JWT 用户筛选并返回最近 100 条。每个用户 60 秒内最多成功读取一次，超限返回 `429` 和 `Retry-After`。
+
+响应只包含帖子和匹配历史：
+
+```json
+{
+  "id": 1,
+  "topic_id": "123",
+  "topic_title": "帖子标题",
+  "topic_url": "https://www.cc98.org/topic/123",
+  "matched_reason": "命中表达式：C++ + 实习",
+  "created_at": "2026-09-03T12:00:00Z"
+}
+```
+
+后端不保存 `is_read`。未读徽章和上次查看位置由前端在本机维护。
 
 ## Watch 新帖扫描
 
 - `POST /api/v1/tasks/scan`
-- `POST /api/tasks/scan`
 
-扫描流程：
-
-1. 读取所有启用中的订阅。
-2. 使用 CC98 服务账号拉取“查看新帖”里的全站最新帖子；如果没有服务账号或开启 mock，则使用 mock 帖子。
-3. 保存 CC98 帖子快照。
-4. 判断帖子是否匹配订阅。
-5. 按搜索表达式命中规则生成唯一通知。
-6. 按用户和通知渠道判断是否到达用户选择的通知时间；未到时间则保持 `pending`。
-7. 到通知时间后，把待发送通知聚合成一条消息，再通过已启用的通知渠道发送。
-8. 更新 worker 健康状态和扫描游标。
+该接口需要管理员密钥。扫描会分页读取全站新帖、按 `topic_id` 去重、按订阅 ID 升序匹配，并以 `(user_id, topic_id)` 保证通知唯一。达到用户提醒时间后，待处理通知会按批次交给所有启用渠道各尝试一次。
 
 重要环境变量：
 
@@ -155,3 +145,5 @@ SMTP_FROM=你的网易邮箱
 - `WATCH_FORCE_MOCK_TOPICS`
 - `MATCHER_FORCE_RULES`
 - `ENABLE_SCHEDULER`
+- `SUBSCRIPTION_LIMIT`
+- `NOTIFICATION_READ_RATE_LIMIT_SECONDS`

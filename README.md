@@ -6,7 +6,7 @@
 
 后端不再做历史搜索/历史查阅功能。正式的 AI 搜索如果后续要做，应该放在浏览器插件里完成，因为它需要使用用户自己的 CC98 Token 和 LLM API Key，这些敏感信息不应该上传到后端。
 
-扫描频率和通知频率是分开的：后端按 `SCAN_INTERVAL_MINUTES` 固定扫描新帖，用户可以在通知渠道里选择更慢的聚合推送频率。通知频率不会快于扫描频率，例如扫描每 10 分钟一次时，用户最快也是 10 分钟收到一次，也可以选择 60 分钟收到一次。
+扫描频率和通知频率是分开的：后端按 `SCAN_INTERVAL_MINUTES` 固定扫描新帖，用户使用一个统一的通知频率，邮箱和钉钉在同一轮各尝试一次。频率以用户投递轮次开始时间计算，不受渠道串行发送耗时影响，并允许少量调度抖动。通知频率不会快于扫描频率，例如扫描每 10 分钟一次时，用户最快也是 10 分钟收到一次，也可以选择 60 分钟收到一次。外部提醒采用至多一次语义，失败不自动补发，完整匹配历史始终保留在通知列表。
 
 ## 快速启动
 
@@ -27,6 +27,7 @@ http://127.0.0.1:8000/docs
 ```text
 MATCHER_FORCE_RULES=true
 WATCH_FORCE_MOCK_TOPICS=true
+WATCH_INITIAL_CURSOR_MODE=backfill
 ENABLE_SCHEDULER=false
 SCAN_INTERVAL_MINUTES=10
 AUTH_DEV_PRINT_CODE=true
@@ -43,7 +44,7 @@ AUTH_EMAIL_DELIVERY=false
 Authorization: Bearer <access_token>
 ```
 
-后端会从 token 里识别当前用户，不再信任请求体或查询参数里的 `user_id`。为了兼容旧前端，接口里暂时还保留 `user_id` 字段，但它不会决定实际操作哪个用户。
+后端会从 token 里识别当前用户，用户接口不接受请求体或查询参数里的 `user_id`。
 
 手动扫描和管理健康检查属于后台接口，需要单独的管理员密钥：
 
@@ -63,7 +64,9 @@ CC98_SERVICE_PASSWORD=
 CC98_TRUST_ENV=false
 ```
 
-后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取 CC98 全站新帖列表，再和订阅关键词/说明做匹配。
+后端会通过 `https://openid.cc98.org/connect/token` 登录和刷新 token。这个 token 只用于 Watch 订阅新帖扫描，不用于 AI 搜索。扫描时会读取 CC98 全站新帖列表，再和用户订阅表达式做匹配。
+
+订阅表达式只使用两种运算符：空白表示 AND，半角 `/` 表示同义词 OR；其他字符均按字面量保留。每个关键词至少 2 个字符，表达式规范化后最多 255 个字符。每个用户最多存在 10 条订阅，暂停的订阅也计数，只有删除才释放名额。
 
 `CC98_TRUST_ENV=false` 表示访问 CC98 时不读取本机 `HTTP_PROXY` / `HTTPS_PROXY` 等系统代理环境变量。开发机开了 Clash、代理但 CC98 直连可用时，建议保持 `false`，否则可能出现 TLS 握手超时。如果部署环境必须通过代理访问 CC98，再改成 `true`。
 
@@ -121,18 +124,7 @@ python -m pytest -q -p no:cacheprovider --basetemp .test-tmp
 - 组长/部署同学：`docs/deployment-handoff.md`
 - 接口总览：`interfaces.md`
 
-为了兼容之前仓库里的前端，也保留了旧接口：
-
-```text
-POST   /api/subscribe
-GET    /api/subscriptions
-DELETE /api/subscribe/{id}
-GET    /api/notifications
-GET    /api/notification-settings
-PUT    /api/notification-settings
-POST   /api/notification-settings/test
-POST   /api/tasks/scan
-```
+旧插件接口不再兼容；订阅、通知、渠道和扫描统一使用 `/api/v1/*`。当前请求与响应格式见 `interfaces.md`。
 
 ## 安全边界
 
