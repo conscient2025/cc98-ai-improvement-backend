@@ -685,6 +685,95 @@ def test_scan_paginates_to_old_cursor_and_saves_first_topic_as_new_cursor(tmp_pa
         db.close()
 
 
+def test_scan_uses_numeric_boundary_when_exact_cursor_disappears(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
+    monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
+    monkeypatch.setenv("NEW_POST_PAGE_SIZE", "5")
+    monkeypatch.setenv("MAX_NEW_POST_PAGES", "2")
+
+    from app import watch
+    from app.database import SessionLocal
+    from app.models import CC98Topic, SystemCursor
+
+    first_page = [
+        {"topic_id": str(topic_id), "title": "new topic", "url": f"https://www.cc98.org/topic/{topic_id}"}
+        for topic_id in range(105, 100, -1)
+    ]
+    second_page = [
+        {"topic_id": str(topic_id), "title": "boundary topic", "url": f"https://www.cc98.org/topic/{topic_id}"}
+        for topic_id in [101, 99, 98, 97, 96]
+    ]
+    calls: list[int] = []
+
+    def fake_get_new_posts(*, limit: int = 20, offset: int = 0):
+        calls.append(offset)
+        return first_page if offset == 0 else second_page
+
+    monkeypatch.setattr(watch.cc98_client, "get_new_posts", fake_get_new_posts)
+    db = SessionLocal()
+    try:
+        db.add(SystemCursor(source=watch.CURSOR_SOURCE, cursor_value="100"))
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+    data = response.json()
+    assert response.status_code == 200
+    assert calls == [0, 5]
+    assert data["status"] == "ok"
+    assert data["cursor_found"] is True
+    assert data["cursor_gap"] is False
+    assert data["unique_topics_before_cursor"] == 5
+
+    db = SessionLocal()
+    try:
+        assert db.get(SystemCursor, watch.CURSOR_SOURCE).cursor_value == "105"
+        assert db.get(CC98Topic, "101") is not None
+        assert db.get(CC98Topic, "99") is None
+    finally:
+        db.close()
+
+
+def test_scan_never_moves_numeric_cursor_backwards(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path)
+    monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
+    monkeypatch.setenv("CC98_SERVICE_USERNAME", "demo")
+
+    from app import watch
+    from app.database import SessionLocal
+    from app.models import SystemCursor
+
+    monkeypatch.setattr(
+        watch.cc98_client,
+        "get_new_posts",
+        lambda *, limit=20, offset=0: [
+            {"topic_id": str(topic_id), "title": "old topic", "url": f"https://www.cc98.org/topic/{topic_id}"}
+            for topic_id in [199, 198, 197]
+        ],
+    )
+    db = SessionLocal()
+    try:
+        db.add(SystemCursor(source=watch.CURSOR_SOURCE, cursor_value="200"))
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post("/api/v1/tasks/scan", headers={"X-Admin-Token": "test-admin-token"})
+    data = response.json()
+    assert response.status_code == 200
+    assert data["status"] == "ok"
+    assert data["cursor_found"] is True
+    assert data["unique_topics_before_cursor"] == 0
+
+    db = SessionLocal()
+    try:
+        assert db.get(SystemCursor, watch.CURSOR_SOURCE).cursor_value == "200"
+    finally:
+        db.close()
+
+
 def test_cursor_gap_preserves_old_cursor(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     monkeypatch.setenv("WATCH_FORCE_MOCK_TOPICS", "false")
@@ -696,15 +785,20 @@ def test_cursor_gap_preserves_old_cursor(tmp_path: Path, monkeypatch) -> None:
     from app.models import SystemCursor, WorkerStatus
 
     def fake_get_new_posts(*, limit: int = 20, offset: int = 0):
+        first_topic_id = 140 - offset
         return [
-            {"topic_id": f"page-{offset}-{index}", "title": "topic", "url": f"https://www.cc98.org/topic/{offset}-{index}"}
+            {
+                "topic_id": str(first_topic_id - index),
+                "title": "topic",
+                "url": f"https://www.cc98.org/topic/{first_topic_id - index}",
+            }
             for index in range(20)
         ]
 
     monkeypatch.setattr(watch.cc98_client, "get_new_posts", fake_get_new_posts)
     db = SessionLocal()
     try:
-        db.add(SystemCursor(source=watch.CURSOR_SOURCE, cursor_value="missing-cursor"))
+        db.add(SystemCursor(source=watch.CURSOR_SOURCE, cursor_value="100"))
         db.commit()
     finally:
         db.close()
@@ -716,7 +810,7 @@ def test_cursor_gap_preserves_old_cursor(tmp_path: Path, monkeypatch) -> None:
 
     db = SessionLocal()
     try:
-        assert db.get(SystemCursor, watch.CURSOR_SOURCE).cursor_value == "missing-cursor"
+        assert db.get(SystemCursor, watch.CURSOR_SOURCE).cursor_value == "100"
         assert db.get(WorkerStatus, "watch_scan").status == "cursor_gap"
     finally:
         db.close()
