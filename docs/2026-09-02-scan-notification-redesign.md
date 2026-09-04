@@ -1,8 +1,6 @@
 # CC98 新帖扫描与通知流程重构方案
 
-> 状态：后端已实施，前端待实施
-> 整理日期：2026-09-02
-> 适用仓库：cc98-ai-improvement-backend 与 cc98_hackthon_frontend
+> 文档日期：2026-09-02
 
 ## 1. 背景与目标
 
@@ -216,7 +214,7 @@ new_cursor = None
 offset = 0
 seen_topic_ids = set()
 new_topics = []
-cursor_found = False
+cursor_boundary_reached = False
 
 while True:
     page = get_new_posts(limit=20, offset=offset)
@@ -225,17 +223,17 @@ while True:
         new_cursor = page[0]["topic_id"]
 
     for topic in page:
-        topic_id = topic["topic_id"]
+        topic_id = int(topic["topic_id"])
 
-        if topic_id == old_cursor:
-            cursor_found = True
-            break
+        if topic_id <= int(old_cursor):
+            cursor_boundary_reached = True
+            continue
 
         if topic_id not in seen_topic_ids:
             seen_topic_ids.add(topic_id)
             new_topics.append(topic)
 
-    if cursor_found or len(page) < 20:
+    if cursor_boundary_reached or len(page) < 20:
         break
 
     offset += 20
@@ -259,7 +257,9 @@ from 是实时列表的偏移量，不是服务端快照游标。抓取第一页
 MAX_NEW_POST_PAGES = 10
 ~~~
 
-如果达到上限仍未找到旧游标：
+旧游标对应的帖子可能在两轮扫描之间被删除、隐藏或改变状态，因此停止条件不能要求精确找到旧游标。只要出现任意 `topic_id <= old_cursor`，就说明扫描已经越过上轮边界；只有达到上限后抓到的帖子仍全部大于旧游标，才视为游标缺口。
+
+如果达到上限仍未越过旧游标边界：
 
 - 标记 worker 为 cursor_gap 或等价异常状态；
 - 保留已抓到和已持久化的数据；
@@ -655,14 +655,15 @@ Notification 由 UNIQUE(user_id, topic_id) 最终去重
 
 ### 13.1 扫描游标
 
-- 游标位于第一页中部：只处理游标之前的新帖；
+- 游标位于第一页中部：只处理编号大于游标的新帖；
+- 游标帖子被删除或隐藏：遇到首条编号小于游标的帖子后正常结束；
 - 第一页 20 条全部在游标之后：继续读取 from=20；
-- 游标位于第三页或更深：连续分页直到找到；
+- 游标位于第三页或更深：连续分页直到越过其编号；
 - 相邻页重复 topic：只处理一次；
 - /topic/new 请求过快返回 403：按退避规则重试；
 - 页面不足 20 条：正确停止；
 - 空页面：安全结束；
-- 达到最大页数仍找不到游标：报告 cursor_gap；
+- 达到最大页数仍未出现编号小于等于游标的帖子：报告 cursor_gap；
 - 通知持久化失败：不推进游标；
 - 持久化成功但更新游标前崩溃：重跑后由唯一约束去重；
 - 新游标始终是第一页第一条，不是最后一条。

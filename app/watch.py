@@ -82,6 +82,15 @@ def _topic_id(topic: dict[str, Any]) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _numeric_topic_id(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _topic_to_model(topic: dict[str, Any]) -> CC98Topic:
     created_at = topic.get("created_at")
     if isinstance(created_at, str):
@@ -185,9 +194,23 @@ def _collect_new_topics(old_cursor: str | None) -> TopicScan:
             baseline_created=True,
         )
 
+    old_cursor_number = _numeric_topic_id(old_cursor)
+    if old_cursor_number is not None:
+        numeric_first_page_ids = [
+            (topic_number, topic_id)
+            for topic in first_page
+            if (topic_id := _topic_id(topic))
+            if (topic_number := _numeric_topic_id(topic_id)) is not None
+        ]
+        if numeric_first_page_ids:
+            newest_topic_number, newest_topic_id = max(numeric_first_page_ids)
+            new_cursor = newest_topic_id if newest_topic_number > old_cursor_number else old_cursor
+        else:
+            new_cursor = old_cursor
+
     seen_topic_ids: set[str] = set()
     topics: list[dict[str, Any]] = []
-    cursor_found = False
+    cursor_boundary_reached = False
     page = first_page
     offset = 0
 
@@ -196,14 +219,26 @@ def _collect_new_topics(old_cursor: str | None) -> TopicScan:
             topic_id = _topic_id(topic)
             if not topic_id:
                 continue
-            if old_cursor is not None and topic_id == old_cursor:
-                cursor_found = True
-                break
+
+            if old_cursor_number is not None:
+                topic_number = _numeric_topic_id(topic_id)
+                if topic_number is None:
+                    logger.warning("non-numeric topic id skipped while using numeric cursor topic_id=%s", topic_id)
+                    continue
+                if topic_number <= old_cursor_number:
+                    cursor_boundary_reached = True
+                    continue
+            elif old_cursor is not None and topic_id == old_cursor:
+                # Development mocks may use non-numeric IDs. Keep exact-match
+                # behavior for them while production CC98 IDs use numeric bounds.
+                cursor_boundary_reached = True
+                continue
+
             if topic_id not in seen_topic_ids:
                 seen_topic_ids.add(topic_id)
                 topics.append(topic)
 
-        if cursor_found or len(page) < page_size or source == "mock":
+        if cursor_boundary_reached or len(page) < page_size or source == "mock":
             break
         if fetched_pages >= max_pages:
             break
@@ -213,18 +248,24 @@ def _collect_new_topics(old_cursor: str | None) -> TopicScan:
         fetched_pages += 1
         fetched_items += len(page)
         logger.info(
-            "new-post page fetched source=%s page=%d offset=%d items=%d old_cursor_found=%s",
+            "new-post page fetched source=%s page=%d offset=%d items=%d cursor_boundary_reached=%s",
             source,
             fetched_pages,
             offset,
             len(page),
-            cursor_found,
+            cursor_boundary_reached,
         )
 
-    cursor_gap = old_cursor is not None and not cursor_found and fetched_pages >= max_pages and len(page) >= page_size
+    cursor_gap = (
+        old_cursor is not None
+        and not cursor_boundary_reached
+        and fetched_pages >= max_pages
+        and len(page) >= page_size
+    )
     if cursor_gap:
         logger.error(
-            "scan cursor gap detected old_cursor=%s pages=%d unique_topics=%d; cursor will not advance",
+            "scan cursor gap detected old_cursor=%s pages=%d unique_topics=%d; "
+            "no topic at or below cursor was found and cursor will not advance",
             old_cursor,
             fetched_pages,
             len(topics),
@@ -236,7 +277,7 @@ def _collect_new_topics(old_cursor: str | None) -> TopicScan:
         topics,
         fetched_pages,
         fetched_items,
-        cursor_found,
+        cursor_boundary_reached,
         cursor_gap,
         baseline_created=False,
     )
@@ -649,7 +690,11 @@ def run_watch_scan(db: Session) -> ScanResponse:
 
         _dispatch_pending_notifications(db, metrics)
         status = "cursor_gap" if topic_scan.cursor_gap else "ok"
-        error = f"old cursor {old_cursor} was not found within {topic_scan.fetched_pages} pages" if topic_scan.cursor_gap else None
+        error = (
+            f"no topic at or below old cursor {old_cursor} was found within {topic_scan.fetched_pages} pages"
+            if topic_scan.cursor_gap
+            else None
+        )
         _set_worker_status(db, "watch_scan", status, error=error, metrics=metrics)
         logger.info(
             "watch scan completed status=%s source=%s pages=%d items=%d unique_topics=%d created_notifications=%d "
